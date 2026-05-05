@@ -1,6 +1,6 @@
 # AMSC_STFT
 
-This work focuses odevelop a C++ framework for spectral analysis of audio signals based on Fourier transforms and signal processing techniques.
+This work focuses on developing a C++ framework for spectral analysis of audio signals based on Fourier transforms and signal processing techniques.
 
 ## Project Description
 
@@ -54,14 +54,18 @@ ft_project/
 │   │   └── BlackmanWindow.hpp
 │   │
 │   ├── stft/
-│   │   ├── STFTAnalyzer.hpp       ← Parallelized template implementation
+│   │   ├── STFTAnalyzer.hpp
+│   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI + optional OpenMP)
 │   │   └── SpectrogramData.hpp
+│   │
+│   ├── mpi/
+│   │   └── MPIContext.hpp         ← RAII wrapper for MPI lifecycle
 │   │
 │   ├── output/
 │   │   └── ImageExporter.hpp
 │   │
 │   └── benchmark/
-│       └── BenchmarkSuite.hpp     ← HPC cluster-ready benchmark definitions
+│       └── BenchmarkSuite.hpp
 │
 ├── src/
 │   ├── audio/
@@ -72,11 +76,14 @@ ft_project/
 │   │   ├── RecursiveFFT.cpp
 │   │   └── ParallelFFT.cpp
 │   │
+│   ├── mpi/
+│   │   └── MPIContext.cpp
+│   │
 │   ├── output/
 │   │   └── ImageExporter.cpp
 │   │
 │   └── benchmark/
-│       └── BenchmarkSuite.cpp     ← Execution logic for performance tests
+│       └── BenchmarkSuite.cpp
 │
 ├── tests/
 │   ├── CMakeLists.txt
@@ -89,14 +96,17 @@ ft_project/
 │   ├── test_HammingWindow.cpp
 │   ├── test_BlackmanWindow.cpp
 │   ├── test_STFTAnalyzer.cpp
-│   └── test_ImageExporter.cpp
+│   ├── test_ImageExporter.cpp
+│   └── test_MPI_STFTAnalyzer.cpp
 │
 ├── benchmarks/ 
 │   ├── CMakeLists.txt
-│   └── bench_main.cpp             ← Main entry point for the benchmark suite
+│   ├── bench_main.cpp
+│   └── mpi_bench_main.cpp         ← Distributed benchmark entry point
 │
 └── examples/
-    └── main.cpp                   ← End-to-end demonstration of the library
+    ├── main.cpp
+    └── mpi_main.cpp               ← End-to-end MPI demonstration
 ```
 
 ### Design & Architecture Notes
@@ -109,7 +119,12 @@ ft_project/
 
 *   **Cluster-Ready Benchmarking (`benchmark/` & `bench_main.cpp`):** 
     The benchmark module is dedicated to rigorously evaluating the computational time of various combinations of FFT algorithms and windowing functions. The architecture of `BenchmarkSuite` has been specifically tailored to be deployed and executed on a High-Performance Computing (HPC) cluster. `bench_main.cpp` serves as the centralized orchestrator for triggering these performance tests.
-    Timing portions of a code can be performed either by the standard C++ functions provided in the header <chrono>, or specialized tools. For instance, MPI provides specific tools for timing programs. In both cases normally timing is performed by one process/thread.
 
 *   **Library Demonstration (`examples/main.cpp`):**
     Provides a comprehensive, end-to-end practical application of the library. It acts as both a testbed and an accessible tutorial for end-users, showcasing the complete pipeline from reading an audio file to generating and exporting the STFT spectrogram.
+
+*   **Distributed & Hybrid Parallelism (`MPI_STFTAnalyzer.hpp`):**  
+    A distributed version of the STFT is implemented using MPI. The input signal is divided into independent frames and distributed across processes. Each process computes its local STFT, and results are gathered to form the final spectrogram.  
+    Additionally, OpenMP can be used within each MPI process, enabling a hybrid parallelization strategy:
+    - MPI for inter-process distribution (across nodes)
+    - OpenMP for intra-process parallelism (within each node)
