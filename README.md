@@ -54,12 +54,9 @@ ft_project/
 │   │   └── BlackmanWindow.hpp
 │   │
 │   ├── stft/
-│   │   ├── STFTAnalyzer.hpp
-│   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI + optional OpenMP)
+│   │   ├── STFTAnalyzer.hpp       ← parallelized with OpenMP
+│   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI)
 │   │   └── SpectrogramData.hpp
-│   │
-│   ├── mpi/
-│   │   └── MPIContext.hpp         ← RAII wrapper for MPI lifecycle
 │   │
 │   ├── output/
 │   │   └── ImageExporter.hpp
