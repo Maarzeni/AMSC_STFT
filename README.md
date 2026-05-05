@@ -109,6 +109,7 @@ ft_project/
 
 *   **Cluster-Ready Benchmarking (`benchmark/` & `bench_main.cpp`):** 
     The benchmark module is dedicated to rigorously evaluating the computational time of various combinations of FFT algorithms and windowing functions. The architecture of `BenchmarkSuite` has been specifically tailored to be deployed and executed on a High-Performance Computing (HPC) cluster. `bench_main.cpp` serves as the centralized orchestrator for triggering these performance tests.
+    Timing portions of a code can be performed either by the standard C++ functions provided in the header <chrono>, or specialized tools. For instance, MPI provides specific tools for timing programs. In both cases normally timing is performed by one process/thread.
 
 *   **Library Demonstration (`examples/main.cpp`):**
     Provides a comprehensive, end-to-end practical application of the library. It acts as both a testbed and an accessible tutorial for end-users, showcasing the complete pipeline from reading an audio file to generating and exporting the STFT spectrogram.
