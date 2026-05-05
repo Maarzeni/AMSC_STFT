@@ -1,8 +1,34 @@
 # AMSC_STFT
 
-This work focuses on implementing one of the most commonly used time-frequency decomposition tools: the Short-Time Fourier Transform (STFT).
+This work focuses odevelop a C++ framework for spectral analysis of audio signals based on Fourier transforms and signal processing techniques.
 
-### Project Structure
+## Project Description
+
+**Spectral Audio Analysis with FFT and STFT**
+
+The project implements a complete pipeline for audio signal analysis, including:
+
+- Fast Fourier Transform (FFT) in multiple variants: recursive, iterative, and parallel;
+- Short-Time Fourier Transform (STFT), built on top of the FFT with segmentation of the audio signal into overlapping time frames;
+- Windowing techniques to study spectral resolution effects, including:
+  - Hann window
+  - Hamming window
+  - Blackman window
+- Parallelized STFT computation;
+- Spectral analysis of real audio signals;
+- Spectrogram generation;
+- Performance comparison between different implementations.
+
+The system is able to:
+
+- read audio files (WAV format, using external Python support or a dedicated library);
+- process the signal using STFT;
+- return:
+  - time-frequency matrix;
+  - spectral information;
+  - final spectrogram as an image.
+
+## Project Structure
 
 ```text
 ft_project/
