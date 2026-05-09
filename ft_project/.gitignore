@@ -1,0 +1,35 @@
+# Prerequisiti
+*.d
+
+# File compilati
+*.slo
+*.lo
+*.o
+*.obj
+*.su
+
+# Binari eseguiti e librerie
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Cartelle di Build (fondamentale!)
+build/
+bin/
+lib/
+out/
+.cmake/
+
+# IDE e configurazioni locali
+.idea/
+.vscode/
+*.swp
+*.kdev4
+
+# Output del tuo programma (non vogliamo caricare le immagini su git)
+*.ppm
+*.png
+*.wav
