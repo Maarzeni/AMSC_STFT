@@ -170,19 +170,72 @@ OMP_NUM_THREADS=4 mpirun -np 8 ./mpi_main
 - OpenMP is enabled automatically if available.
 - The build produces the `amsc_stft_core` static library.
 
-## Run Test
+## Run Tests
 
-To ensure the build system and the **Google Test (GTest)** integration are configured correctly, we implemented a baseline infrastructure test. This confirms that the environment can successfully download the GTest dependency, compile the project, and link the core library.
+### Test 1 — Build System & GoogleTest Integration
 
-The initial test in `tests/test_WavReader.cpp` performs a basic assertion to verify the testing framework is operational:
-- **Condition:** Verifies if $2 + 2 = 4$.
-- **Purpose:** Ensures the `amsc_stft_core` library links correctly and the test runner executes without memory or configuration errors.
+To verify that the build system and the **GoogleTest (GTest)** integration are configured correctly, a baseline infrastructure test was implemented.  
+This confirms that the environment can successfully:
 
-From the project root, execute the following commands:
+- configure the project with CMake;
+- compile the source files;
+- link the `amsc_stft_core` library;
+- execute the testing framework correctly.
+
+The initial test performs a simple assertion:
+- **Condition:** verifies that `2 + 2 == 4`
+- **Purpose:** validates the correctness of the testing infrastructure and library linkage.
+
+Build and run the tests with:
 
 ```bash
 mkdir -p build
 cd build
+
 cmake ..
 make -j
+
 ctest --output-on-failure
+```
+
+---
+
+### Test 2 — WAV Loading Validation
+
+A second test was introduced to validate the audio input pipeline through the `WavReader` module.
+
+The test uses a small mono WAV file (`test_audio.wav`) containing a 440 Hz sine wave and verifies that:
+
+- the WAV file is loaded correctly;
+- the sample rate is extracted successfully;
+- audio samples are read into memory;
+- invalid file paths generate the expected exception.
+
+This test validates the complete path:
+
+```text
+WAV file → WavReader → memory buffer
+```
+
+The following checks are performed:
+
+- **LoadValidFile**
+  - verifies that the sample rate is greater than zero;
+  - verifies that the loaded sample vector is not empty.
+
+- **ThrowsOnMissingFile**
+  - verifies that attempting to load a non-existent WAV file throws a `std::runtime_error`.
+
+Run the test suite with:
+
+```bash
+cd build
+
+ctest --output-on-failure
+```
+
+or execute the test binary directly:
+
+```bash
+./tests/test_WavReader
+```
