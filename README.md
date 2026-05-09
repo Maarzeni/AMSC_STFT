@@ -169,3 +169,20 @@ OMP_NUM_THREADS=4 mpirun -np 8 ./mpi_main
 - `compile_commands.json` is generated automatically for IDE support.
 - OpenMP is enabled automatically if available.
 - The build produces the `amsc_stft_core` static library.
+
+## Run Test
+
+To ensure the build system and the **Google Test (GTest)** integration are configured correctly, we implemented a baseline infrastructure test. This confirms that the environment can successfully download the GTest dependency, compile the project, and link the core library.
+
+The initial test in `tests/test_WavReader.cpp` performs a basic assertion to verify the testing framework is operational:
+- **Condition:** Verifies if $2 + 2 = 4$.
+- **Purpose:** Ensures the `amsc_stft_core` library links correctly and the test runner executes without memory or configuration errors.
+
+From the project root, execute the following commands:
+
+```bash
+mkdir -p build
+cd build
+cmake ..
+make -j
+ctest --output-on-failure
