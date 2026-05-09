@@ -125,3 +125,47 @@ ft_project/
     Additionally, OpenMP can be used within each MPI process, enabling a hybrid parallelization strategy:
     - MPI for inter-process distribution (across nodes)
     - OpenMP for intra-process parallelism (within each node)
+
+
+### Build
+
+```bash
+git clone <repository-url>
+cd ft_project
+
+mkdir build
+cd build
+
+cmake ..
+make -j
+```
+
+---
+
+### Run Tests
+
+```bash
+ctest
+```
+
+---
+
+### Run MPI Version
+
+```bash
+mpirun -np 4 ./mpi_main
+```
+
+Example of hybrid MPI + OpenMP execution:
+
+```bash
+OMP_NUM_THREADS=4 mpirun -np 8 ./mpi_main
+```
+
+---
+
+### Notes
+
+- `compile_commands.json` is generated automatically for IDE support.
+- OpenMP is enabled automatically if available.
+- The build produces the `amsc_stft_core` static library.

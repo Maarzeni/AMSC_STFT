@@ -1,42 +1,46 @@
 cmake_minimum_required(VERSION 3.20)
 project(AMSC_STFT VERSION 1.0.0 LANGUAGES CXX)
 
-# Richiedi C++17 come minimo (essenziale per template avanzati e constexpr)
+# Require at least C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Utile per l'autocompletamento in VSCode/CLion
 
-# Flag di compilazione: massimi warning per il debug, massima velocità (-O3) per l'esecuzione
+# Generate compile_commands.json for IDE support and autocompletion
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Compilation flags:
+# enable strict warnings and high optimization level (-O3)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -O3)
 endif()
 
-# Creiamo la libreria "core" del tuo progetto raccogliendo i file .cpp
-# (Nota: i file .hpp verranno trovati in automatico tramite l'include_directories qui sotto)
+# Core library containing the main implementation files
 add_library(amsc_stft_core 
     src/audio/WavReader.cpp
     src/fft/IterativeFFT.cpp
     src/fft/RecursiveFFT.cpp
     src/fft/ParallelFFT.cpp
     src/output/ImageExporter.cpp
-    # src/mpi/MPIContext.cpp  <-- Tienilo commentato finché non scrivi il codice MPI
+    # MPI module will be enabled once the MPI toolchain is fully configured
+    # src/mpi/MPIContext.cpp
 )
 
-# Diciamo alla libreria dove trovare i file header (.hpp)
+# Header search path for the library
 target_include_directories(amsc_stft_core PUBLIC 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-# (Opzionale per ora) Predisposizione per OpenMP
+# Enable OpenMP automatically if available on the system
 find_package(OpenMP)
+
 if(OpenMP_CXX_FOUND)
     target_link_libraries(amsc_stft_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
-# Abilitiamo i test
+# Enable testing support
 enable_testing()
 
-# Includiamo le sotto-cartelle (se commentate, significa che le attiveremo dopo)
+# Project subdirectories
 add_subdirectory(tests)
-# add_subdirectory(examples)   # Decommenta quando crei main.cpp
-# add_subdirectory(benchmarks) # Decommenta quando passi all'HPC
+# add_subdirectory(examples)    # Enable when example applications are added
+# add_subdirectory(benchmarks)  # Enable when benchmarking/HPC support is ready
