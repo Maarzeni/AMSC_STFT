@@ -281,3 +281,112 @@ or execute the test binary directly:
 ```bash
 ./tests/test_Concept
 ```
+
+---
+
+### Test 4 — Recursive FFT Validation
+
+A fourth test suite was introduced to validate the correctness and robustness of the `RecursiveFFT` implementation.
+
+The test verifies both the mathematical properties of the FFT algorithm and the correctness of error handling.
+
+The following scenarios are covered:
+
+- **HandlesEmptyInput**
+  - verifies that an empty input vector throws a `std::invalid_argument` exception;
+  - ensures that the input vector remains unchanged.
+
+- **ThrowsOnNonPowerOfTwo**
+  - verifies that FFT execution fails when the input size is not a power of two;
+  - checks both `forward()` and `inverse()` methods.
+
+- **ImpulseResponse**
+  - validates the Fourier transform of a Dirac impulse;
+  - verifies that `[1, 0, 0, 0]` transforms into `[1, 1, 1, 1]`.
+
+- **ForwardInverseIdentity**
+  - verifies the reversibility property of the FFT:
+
+```text
+IFFT(FFT(x)) == x
+```
+
+  - generates a mixed sinusoidal signal composed of multiple frequencies;
+  - applies FFT followed by inverse FFT;
+  - verifies that the reconstructed signal matches the original signal within floating-point tolerance.
+
+- **ConstantSignal**
+  - validates the DC component behavior;
+  - verifies that a constant signal `[2, 2, 2, 2]` produces:
+
+```text
+[8, 0, 0, 0]
+```
+
+  - confirms that the energy is concentrated at frequency bin 0.
+
+The test suite also includes a helper utility for comparing complex vectors using floating-point tolerance checks.
+
+Run the Recursive FFT test with:
+
+```bash
+cd build
+
+ctest --output-on-failure -R RecursiveFFTTest
+```
+
+or execute the test binary directly:
+
+```bash
+./tests/test_RecursiveFFT
+```
+
+---
+
+### Test 5 — Iterative FFT Validation
+
+A fifth test suite was introduced to validate the `IterativeFFT` implementation.
+
+This test ensures that the iterative FFT algorithm produces correct results and behaves consistently with the expected mathematical properties of the Fast Fourier Transform.
+
+The validation process includes:
+
+- input validation;
+- power-of-two size verification;
+- impulse response correctness;
+- forward/inverse transform consistency;
+- constant signal analysis;
+- floating-point precision verification.
+
+The following scenarios are tested:
+
+- **HandlesEmptyInput**
+  - verifies that empty input vectors generate a `std::invalid_argument` exception.
+
+- **ThrowsOnNonPowerOfTwo**
+  - verifies that FFT execution is rejected when the input size is not a power of two.
+
+- **ImpulseResponse**
+  - validates the transform of a discrete impulse signal.
+
+- **ForwardInverseIdentity**
+  - verifies that applying FFT followed by inverse FFT reconstructs the original signal correctly.
+
+- **ConstantSignal**
+  - validates the expected DC-frequency behavior for constant input signals.
+
+The iterative implementation is particularly important because it avoids recursive function calls and is generally more cache-efficient for large datasets.
+
+Run the Iterative FFT test with:
+
+```bash
+cd build
+
+ctest --output-on-failure -R IterativeFFTTest
+```
+
+or execute the test binary directly:
+
+```bash
+./tests/test_IterativeFFT
+```
