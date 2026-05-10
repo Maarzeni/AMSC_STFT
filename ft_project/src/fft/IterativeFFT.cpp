@@ -8,15 +8,15 @@ namespace amsc_stft {
 void IterativeFFT::forward_impl(std::vector<std::complex<double>>& data) {
     if (data.size() <= 1) return;
 
-    bit_reverse_reorder(data);
-    compute_butterflies(data, false);
+    bitReverse(data);
+    butterflyPass(data, false);
 }
 
 void IterativeFFT::inverse_impl(std::vector<std::complex<double>>& data) {
     if (data.size() <= 1) return;
 
-    bit_reverse_reorder(data);
-    compute_butterflies(data, true);
+    bitReverse(data);
+    butterflyPass(data, true);
 
     // Normalizzazione IFFT
     const double norm = 1.0 / static_cast<double>(data.size());
@@ -25,7 +25,7 @@ void IterativeFFT::inverse_impl(std::vector<std::complex<double>>& data) {
     }
 }
 
-void IterativeFFT::bit_reverse_reorder(std::vector<std::complex<double>>& data) const {
+void IterativeFFT::bitReverse(std::vector<std::complex<double>>& data) const {
     const size_t n = data.size();
     // Usiamo std::countr_zero per trovare il log2(n) in modo efficiente (C++20)
     const int log_n = std::countr_zero(n);
@@ -43,7 +43,7 @@ void IterativeFFT::bit_reverse_reorder(std::vector<std::complex<double>>& data) 
     }
 }
 
-void IterativeFFT::compute_butterflies(std::vector<std::complex<double>>& data, bool inverse) const {
+void IterativeFFT::butterflyPass(std::vector<std::complex<double>>& data, bool inverse) const {
     const size_t n = data.size();
     const double pi = std::numbers::pi;
     const double angle_sign = inverse ? 1.0 : -1.0;

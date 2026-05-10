@@ -31,12 +31,12 @@ private:
     /**
      * @brief Reorders the vector using bit-reversal permutation.
      */
-    void bit_reverse_reorder(std::vector<std::complex<double>>& data) const;
+    void bitReverse(std::vector<std::complex<double>>& data) const;
 
     /**
      * @brief Core butterfly computational kernel.
      */
-    void compute_butterflies(std::vector<std::complex<double>>& data, bool inverse) const;
+    void butterflyPass(std::vector<std::complex<double>>& data, bool inverse) const;
 };
 
 } // namespace amsc_stft
