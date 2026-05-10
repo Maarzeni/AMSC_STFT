@@ -58,11 +58,8 @@ ft_project/
 │   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI)
 │   │   └── SpectrogramData.hpp
 │   │
-│   ├── output/
-│   │   └── ImageExporter.hpp
-│   │
-│   └── benchmark/
-│       └── BenchmarkSuite.hpp
+│   └── output/
+│       └── ImageExporter.hpp
 │
 ├── src/
 │   ├── audio/
@@ -76,11 +73,8 @@ ft_project/
 │   ├── mpi/
 │   │   └── MPIContext.cpp
 │   │
-│   ├── output/
-│   │   └── ImageExporter.cpp
-│   │
-│   └── benchmark/
-│       └── BenchmarkSuite.cpp
+│   └── output/
+│       └── ImageExporter.cpp
 │
 ├── tests/
 │   ├── CMakeLists.txt
@@ -98,8 +92,9 @@ ft_project/
 │
 ├── benchmarks/ 
 │   ├── CMakeLists.txt
-│   ├── bench_main.cpp
-│   └── mpi_bench_main.cpp         ← Distributed benchmark entry point
+|   ├── benchmark_Suite.hpp
+│   ├── benchmark_Main.cpp
+│   └── benchmark_MPI_Main.cpp         ← Distributed benchmark entry point
 │
 └── examples/
     ├── main.cpp
@@ -125,6 +120,9 @@ ft_project/
     Additionally, OpenMP can be used within each MPI process, enabling a hybrid parallelization strategy:
     - MPI for inter-process distribution (across nodes)
     - OpenMP for intra-process parallelism (within each node)
+
+*   **Decoupling Benchmarks:** 
+    To adhere to the Single Responsibility Principle, the benchmarking suite has been decoupled from the core library and moved to a standalone benchmarks/ directory. End-users download amsc_stft_core for high-performance signal processing, not to run developer performance tests. Embedding benchmark code inside the core library needlessly inflates compilation times and binary size.
 
 
 ### Build

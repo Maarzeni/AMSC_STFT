@@ -40,3 +40,8 @@ add_test(NAME IterativeFFTTest COMMAND test_IterativeFFT)
 add_executable(test_ParallelFFT test_ParallelFFT.cpp)
 target_link_libraries(test_ParallelFFT PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME ParallelFFTTest COMMAND test_ParallelFFT)
+
+# --- Parallel FFT Test with OpenMP ---
+add_executable(test_ParallelFFT_OpenMP test_ParallelFFT_OpenMP.cpp)
+target_link_libraries(test_ParallelFFT_OpenMP PRIVATE amsc_stft_core GTest::gtest_main OpenMP::OpenMP_CXX)
+add_test(NAME ParallelFFTOpenMPTest COMMAND test_ParallelFFT_OpenMP)
