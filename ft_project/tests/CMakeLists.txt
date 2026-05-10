@@ -35,3 +35,8 @@ add_test(NAME RecursiveFFTTest COMMAND test_RecursiveFFT)
 add_executable(test_IterativeFFT test_IterativeFFT.cpp)
 target_link_libraries(test_IterativeFFT PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME IterativeFFTTest COMMAND test_IterativeFFT)
+
+# --- Parallel FFT Test ---
+add_executable(test_ParallelFFT test_ParallelFFT.cpp)
+target_link_libraries(test_ParallelFFT PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME ParallelFFTTest COMMAND test_ParallelFFT)
