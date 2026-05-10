@@ -13,11 +13,11 @@ using namespace amsc_stft;
 // It doesn't do any math, it just has the right signatures.
 class ValidMockFFT {
 public:
-    void forward(std::vector<std::complex<double>>& data) {
+    void forward([[maybe_unused]] std::vector<std::complex<double>>& data) {
         // Empty implementation
     }
 
-    void inverse(std::vector<std::complex<double>>& data) {
+    void inverse([[maybe_unused]] std::vector<std::complex<double>>& data) {
         // Empty implementation
     }
 };
@@ -25,7 +25,7 @@ public:
 // 2. An invalid mock class that intentionally lacks the 'inverse' method.
 class InvalidMockFFT {
 public:
-    void forward(std::vector<std::complex<double>>& data) {
+    void forward([[maybe_unused]] std::vector<std::complex<double>>& data) {
         // Empty implementation
     }
     // Intentionally missing inverse()
