@@ -239,3 +239,45 @@ or execute the test binary directly:
 ```bash
 ./tests/test_WavReader
 ```
+
+---
+
+### Test 3 — C++20 Concepts Validation
+
+A third test was introduced to validate the **C++20 Concepts** mechanism used for compile-time polymorphism in the FFT implementations.
+
+The test verifies that the `IsFFT` concept correctly enforces the interface contract for FFT classes. The concept requires that any valid FFT implementation must provide:
+
+- `forward(std::vector<std::complex<double>>&)` method
+- `inverse(std::vector<std::complex<double>>&)` method
+
+The test includes two mock classes:
+
+- **ValidMockFFT**
+  - satisfies all requirements of the `IsFFT` concept;
+  - verifies that the concept correctly accepts a valid implementation.
+
+- **InvalidMockFFT**
+  - intentionally lacks the `inverse()` method;
+  - verifies that the concept correctly rejects an invalid implementation.
+
+Both checks are performed using `static_assert` at compile-time:
+
+- `static_assert(IsFFT<ValidMockFFT>, ...)` — confirms that valid FFTs pass the concept check.
+- `static_assert(!IsFFT<InvalidMockFFT>, ...)` — confirms that incomplete implementations are rejected.
+
+If the program compiles successfully, all compile-time checks have passed. A runtime test also verifies the integrity of the testing infrastructure.
+
+Run the test with:
+
+```bash
+cd build
+
+ctest --output-on-failure -R ConceptTest
+```
+
+or execute the test binary directly:
+
+```bash
+./tests/test_Concept
+```
