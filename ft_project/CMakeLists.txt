@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(AMSC_STFT VERSION 1.0.0 LANGUAGES CXX)
 
-# Require at least C++17
-set(CMAKE_CXX_STANDARD 17)
+# Require at least C++20
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Generate compile_commands.json for IDE support and autocompletion
