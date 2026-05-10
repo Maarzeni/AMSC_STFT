@@ -388,3 +388,54 @@ or execute the test binary directly:
 ```bash
 ./tests/test_IterativeFFT
 ```
+
+---
+
+### Test 6 — Parallel FFT & OpenMP Validation
+
+A sixth test suite was introduced to validate the **multi-threaded implementation** of the FFT, particularly focusing on correct OpenMP parallelization.
+
+This test is divided into functional correctness checks and parallel safety validation. The suite tests different thread-count configurations to ensure consistency across variable core allocations.
+
+The following scenarios are covered:
+
+- **CorrectnessDifferentThreadCounts**
+  - validates mathematically correct results utilizing `1, 2, 4, 8` threads;
+  - ensures different system configurations do not modify mathematical outcomes.
+
+- **LargeDataParallelProcessing**
+  - executes transformation on a very large array (65K elements);
+  - stresses the multi-threading loop overhead and evaluates data chunking mechanisms.
+
+- **RoundTripMultipleThreads**
+  - confirms reversible data conversion (Forward ↔ Inverse) across all active thread scales.
+
+- **ThreadSafety**
+  - triggers heavy concurrency testing simulating 8 isolated concurrent computations;
+  - ensures data races and false-sharing do not impact the transformation result.
+
+- **InvalidSizeCheckParallel**
+  - verifies that runtime safety boundaries still correctly trigger exceptions even inside threaded scenarios.
+
+- **HybridParallelismSimulation**
+  - splits transformations similarly to node-based communication (MPI style);
+  - computes sub-blocks with dynamic OpenMP scheduling.
+
+Run the Parallel FFT OpenMP test with:
+
+```bash
+cd build
+
+# To test with a specific number of threads (e.g. 4)
+OMP_NUM_THREADS=4 ctest --output-on-failure -R ParallelFFTOpenMPTest
+```
+
+or execute the test binary directly to observe the custom output and benchmark:
+
+```bash
+# Set 8 threads dynamically
+OMP_NUM_THREADS=8 ./tests/test_ParallelFFT_OpenMP
+
+# Run the serial baseline
+OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
+```
