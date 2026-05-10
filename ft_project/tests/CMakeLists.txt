@@ -25,8 +25,13 @@ add_executable(test_Concept test_Concept.cpp)
 target_link_libraries(test_Concept PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME ConceptTest COMMAND test_Concept)
 
+# Recursive FFT Test
+add_executable(test_RecursiveFFT test_RecursiveFFT.cpp)
+target_link_libraries(test_RecursiveFFT PRIVATE amsc_stft_core GTest::gtest_main)
+target_compile_definitions(test_RecursiveFFT PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_test(NAME RecursiveFFTTest COMMAND test_RecursiveFFT)
 
-# Example 2: Recursive FFT Test (left here for future implementation)
-# add_executable(test_RecursiveFFT test_RecursiveFFT.cpp)
-# target_link_libraries(test_RecursiveFFT PRIVATE amsc_stft_core GTest::gtest_main)
-# add_test(NAME RecursiveFFTTest COMMAND test_RecursiveFFT)
+# Iterative FFT Test 
+add_executable(test_IterativeFFT test_IterativeFFT.cpp)
+target_link_libraries(test_IterativeFFT PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME IterativeFFTTest COMMAND test_IterativeFFT)
