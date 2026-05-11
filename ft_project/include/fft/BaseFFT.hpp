@@ -8,47 +8,59 @@
 
 namespace amsc_stft {
 
-// ==========================================
-// C++20 CONCEPT (Interface Contract)
-// ==========================================
-// A type T satisfies "IsFFT" if it possesses the public methods "forward" and "inverse"
-// that take a vector of complex numbers and return nothing (void).
+/**
+ * @brief C++20 concept for FFT implementations.
+ *
+ * Requires forward() and inverse() methods
+ * operating on complex vectors.
+ */
 template <typename T>
 concept IsFFT = requires(T a, std::vector<std::complex<double>>& data) {
     { a.forward(data) } -> std::same_as<void>;
     { a.inverse(data) } -> std::same_as<void>;
 };
 
-// CRTP pattern: BaseFFT takes 'Derived' as a template parameter
+/**
+ * @class BaseFFT
+ * @brief CRTP base class for FFT implementations.
+ *
+ * Provides common validation and dispatch logic.
+ */
 template <typename Derived>
 class BaseFFT {
 public:
-    // Public method that the user (or STFTAnalyzer) will call
-    void forward(std::vector<std::complex<double>>& data) {
-        // 1. Perform safety checks valid for ALL FFT implementations
-        checkPowerOfTwo(data.size());
 
-        // 2. The CRTP magic: force the compiler to treat 'this'
-        // as a pointer to the Derived class, and call its implementation.
-        // This happens without any runtime overhead!
+    /**
+     * @brief Executes forward FFT.
+     * @param data Input complex vector.
+     */
+    void forward(std::vector<std::complex<double>>& data) {
+        checkPowerOfTwo(data.size());
         static_cast<Derived*>(this)->forward_impl(data);
     }
 
-    // Method for the Inverse Transform (IFFT)
+    /**
+     * @brief Executes inverse FFT.
+     * @param data Input complex vector.
+     */
     void inverse(std::vector<std::complex<double>>& data) {
         checkPowerOfTwo(data.size());
         static_cast<Derived*>(this)->inverse_impl(data);
     }
 
 protected:
-    // Prevents anyone from instantiating BaseFFT directly
+
     BaseFFT() = default;
 
-    // Utility method available to all derived classes.
-    // The Cooley-Tukey Radix-2 algorithm requires that N be a power of 2.
+    /**
+     * @brief Checks if the input size is a power of two.
+     * @param n Input size.
+     */
     void checkPowerOfTwo(size_t n) const {
         if (n == 0 || (n & (n - 1)) != 0) {
-            throw std::invalid_argument("FFT Error: The input size must be a power of 2.");
+            throw std::invalid_argument(
+                "FFT Error: The input size must be a power of 2."
+            );
         }
     }
 };

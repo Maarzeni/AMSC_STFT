@@ -10,33 +10,37 @@ namespace amsc_stft {
 /**
  * @class IterativeFFT
  * @brief Iterative Cooley-Tukey FFT implementation.
- * 
+ *
  * Uses bit-reversal permutation and in-place butterfly operations.
- * This implementation is more cache-friendly and performant than the recursive one.
  */
 class IterativeFFT : public BaseFFT<IterativeFFT> {
+
     friend class BaseFFT<IterativeFFT>;
 
 private:
+
     /**
-     * @brief Forward FFT implementation for CRTP.
+     * @brief Forward FFT implementation.
      */
     void forward_impl(std::vector<std::complex<double>>& data);
 
     /**
-     * @brief Inverse FFT implementation for CRTP.
+     * @brief Inverse FFT implementation.
      */
     void inverse_impl(std::vector<std::complex<double>>& data);
 
     /**
-     * @brief Reorders the vector using bit-reversal permutation.
+     * @brief Reorders the input using bit-reversal permutation.
      */
     void bitReverse(std::vector<std::complex<double>>& data) const;
 
     /**
-     * @brief Core butterfly computational kernel.
+     * @brief Executes iterative butterfly stages.
      */
-    void butterflyPass(std::vector<std::complex<double>>& data, bool inverse) const;
+    void butterflyPass(
+        std::vector<std::complex<double>>& data,
+        bool inverse
+    ) const;
 };
 
 } // namespace amsc_stft
