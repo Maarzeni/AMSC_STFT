@@ -14,30 +14,63 @@
 
 namespace amsc_stft {
 
+/**
+ * @class ParallelFFT
+ * @brief Parallel Cooley-Tukey FFT implementation.
+ *
+ * Uses multi-threading to accelerate butterfly computation.
+ */
 class ParallelFFT : public BaseFFT<ParallelFFT> {
+
     friend class BaseFFT<ParallelFFT>;
 
 public:
+
     /**
-     * @brief Construct with specified thread count.
-     * @param num_threads Number of threads (0 = use hardware concurrency).
+     * @brief Constructs the FFT with a given number of threads.
+     * @param num_threads Number of threads to use (0 = hardware concurrency).
      */
     explicit ParallelFFT(size_t num_threads = 0);
 
 protected:
-    // Core implementations called by BaseFFT
+
+    /**
+     * @brief Forward FFT implementation.
+     * @param data Input complex vector.
+     */
     void forward_impl(std::vector<std::complex<double>>& data);
+
+    /**
+     * @brief Inverse FFT implementation.
+     * @param data Input complex vector.
+     */
     void inverse_impl(std::vector<std::complex<double>>& data);
 
 private:
+
     size_t num_threads_;
 
-    // Helper methods
+    /**
+     * @brief Computes bit-reversed index.
+     */
     static size_t bitReverse(size_t i, size_t log_n);
+
+    /**
+     * @brief Computes integer log2 of n (n must be power of two).
+     */
     static size_t log2int(size_t n);
-    
-    // The parallel butterfly engine
-    void butterflyPassParallel(std::vector<std::complex<double>>& data, size_t n, bool inverse) const;
+
+    /**
+     * @brief Parallel butterfly computation kernel.
+     * @param data Input complex vector.
+     * @param n Signal size.
+     * @param inverse Enables inverse FFT when true.
+     */
+    void butterflyPassParallel(
+        std::vector<std::complex<double>>& data,
+        size_t n,
+        bool inverse
+    ) const;
 };
 
 } // namespace amsc_stft

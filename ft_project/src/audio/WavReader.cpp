@@ -1,26 +1,32 @@
 #include "audio/WavReader.hpp"
-#include "audio/AudioFile.h" // The external dependency
-#include <iostream>
+#include "audio/AudioFile.h"
 #include <stdexcept>
 
 namespace amsc_stft {
 
-std::vector<double> WavReader::load(const std::string& filename, uint32_t& sampleRate) {
-    AudioFile<double> audioFile; // class from the AudioFile.h library!
+/**
+ * @brief Loads a WAV file and extracts mono audio data.
+ * @param filename Path to input WAV file.
+ * @param sampleRate Output sample rate.
+ * @return Mono audio signal (first channel).
+ */
+std::vector<double> WavReader::load(const std::string& filename,
+                                    uint32_t& sampleRate) {
+
+    AudioFile<double> audioFile;
 
     if (!audioFile.load(filename)) {
         throw std::runtime_error("Failed to load WAV file: " + filename);
     }
 
     sampleRate = audioFile.getSampleRate();
-    
-    // For spectral analysis, we usually work with mono signals.
-    // If the file is stereo, we'll just take the first channel (index 0).
+
     if (audioFile.getNumChannels() == 0) {
-        throw std::runtime_error("Audio file has no channels.");
+        throw std::runtime_error("Invalid audio file: no channels found.");
     }
 
-    return audioFile.samples[0]; 
+    // Mono signal extraction (first channel)
+    return audioFile.samples[0];
 }
 
 } // namespace amsc_stft
