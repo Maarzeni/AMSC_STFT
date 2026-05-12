@@ -5,7 +5,7 @@
 #include <vector>
 #include <complex>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @class RecursiveFFT
@@ -36,6 +36,6 @@ private:
     void inverse_impl(std::vector<std::complex<double>>& data);
 };
 
-} // namespace amsc_stft
+} // namespace stft
 
 #endif // RECURSIVE_FFT_HPP

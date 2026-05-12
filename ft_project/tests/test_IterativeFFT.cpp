@@ -5,7 +5,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace amsc_stft {
+namespace stft {
 namespace testing {
 
 // Fixture class for IterativeFFT tests
@@ -105,4 +105,4 @@ TEST_F(IterativeFFTTest, ConstantSignal) {
 }
 
 } // namespace testing
-} // namespace amsc_stft
+} // namespace stft

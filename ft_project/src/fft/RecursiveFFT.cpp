@@ -2,7 +2,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @brief Executes the forward recursive FFT.
@@ -84,4 +84,4 @@ void RecursiveFFT::fft_recursive(
     }
 }
 
-} // namespace amsc_stft
+} // namespace stft

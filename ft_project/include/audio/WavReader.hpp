@@ -5,7 +5,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @class WavReader
@@ -28,6 +28,6 @@ public:
                                     uint32_t& sampleRate);
 };
 
-} // namespace amsc_stft
+} // namespace stft
 
 #endif

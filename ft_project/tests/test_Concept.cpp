@@ -3,7 +3,7 @@
 #include <vector>
 #include <complex>
 
-using namespace amsc_stft;
+using namespace stft;
 
 // ==========================================
 // MOCK CLASSES (For isolated testing)

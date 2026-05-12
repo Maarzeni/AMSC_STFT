@@ -12,7 +12,7 @@
 #include <thread>
 #include <cstddef>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @class ParallelFFT
@@ -73,6 +73,6 @@ private:
     ) const;
 };
 
-} // namespace amsc_stft
+} // namespace stft
 
 #endif // PARALLEL_FFT_HPP

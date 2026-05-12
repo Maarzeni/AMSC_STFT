@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @brief Constructs the parallel FFT engine.
@@ -200,4 +200,4 @@ void ParallelFFT::butterflyPassParallel(
     }
 }
 
-} // namespace amsc_stft
+} // namespace stft

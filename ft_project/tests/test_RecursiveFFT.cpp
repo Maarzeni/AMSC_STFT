@@ -5,7 +5,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace amsc_stft {
+namespace stft {
 namespace testing {
 
 // Fixture class for RecursiveFFT tests
@@ -120,4 +120,4 @@ TEST_F(RecursiveFFTTest, ConstantSignal) {
 }
 
 } // namespace testing
-} // namespace amsc_stft
+} // namespace stft

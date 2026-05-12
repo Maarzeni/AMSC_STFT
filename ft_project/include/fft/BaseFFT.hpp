@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <concepts>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @brief C++20 concept for FFT implementations.
@@ -65,6 +65,6 @@ protected:
     }
 };
 
-} // namespace amsc_stft
+} // namespace stft
 
 #endif // BASE_FFT_HPP

@@ -5,7 +5,7 @@
 #include <vector>
 #include <complex>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @class IterativeFFT
@@ -43,6 +43,6 @@ private:
     ) const;
 };
 
-} // namespace amsc_stft
+} // namespace stft
 
 #endif // ITERATIVE_FFT_HPP

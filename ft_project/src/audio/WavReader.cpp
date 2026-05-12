@@ -2,7 +2,7 @@
 #include "audio/AudioFile.h"
 #include <stdexcept>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @brief Loads a WAV file and extracts mono audio data.
@@ -29,4 +29,4 @@ std::vector<double> WavReader::load(const std::string& filename,
     return audioFile.samples[0];
 }
 
-} // namespace amsc_stft
+} // namespace stft

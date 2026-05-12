@@ -5,7 +5,7 @@
 #include <cmath>
 #include <omp.h>
 
-using namespace amsc_stft;
+using namespace stft;
 
 // ==========================================
 // 1. COMPILE-TIME CONCEPT CHECK

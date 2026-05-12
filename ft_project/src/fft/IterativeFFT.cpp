@@ -3,7 +3,7 @@
 #include <numbers>
 #include <bit>
 
-namespace amsc_stft {
+namespace stft {
 
 /**
  * @brief Executes the forward iterative FFT.
@@ -109,4 +109,4 @@ void IterativeFFT::butterflyPass(
     }
 }
 
-} // namespace amsc_stft
+} // namespace stft

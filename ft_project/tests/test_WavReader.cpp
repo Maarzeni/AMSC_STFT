@@ -4,7 +4,7 @@
 #include <iostream>
 #include <algorithm>
 
-using namespace amsc_stft;
+using namespace stft;
 
 // Helper to check if a file exists
 bool fileExists(const std::string& name) {

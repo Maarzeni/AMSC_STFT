@@ -4,7 +4,7 @@
 #include <complex>
 #include <cmath>
 
-using namespace amsc_stft;
+using namespace stft;
 
 // ==========================================
 // 1. COMPILE-TIME CONCEPT CHECK
