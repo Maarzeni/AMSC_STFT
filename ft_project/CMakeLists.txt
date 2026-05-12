@@ -31,11 +31,12 @@ target_include_directories(amsc_stft_core PUBLIC
 )
 
 # Enable OpenMP automatically if available on the system
-find_package(OpenMP)
+find_package(OpenMP REQUIRED)
 
 if(OpenMP_CXX_FOUND)
     target_link_libraries(amsc_stft_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
+
 
 # Enable testing support
 enable_testing()
