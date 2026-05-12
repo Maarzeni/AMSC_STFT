@@ -102,9 +102,24 @@ ft_project/
 ```
 
 ### Design & Architecture Notes
+* **Compile-Time Polymorphism (`BaseFFT.hpp`):**
+  Instead of traditional runtime polymorphism (virtual dispatch, abstract base
+  classes), all FFT implementations use the **Curiously Recurring Template
+  Pattern (CRTP)**. `BaseFFT.hpp` defines the static interface via CRTP, 
+  guaranteeing zero-overhead dispatch and early, descriptive compile-time 
+  diagnostics for library users.
 
-*   **Compile-Time Polymorphism (`BaseFFT.hpp`):** 
-    Instead of relying on traditional runtime polymorphism (abstract base classes and virtual functions), the core FFT implementations utilize the **Curiously Recurring Template Pattern (CRTP)**. `BaseFFT.hpp` acts as the concept interface. This design choice ensures zero-overhead static dispatch and yields significantly clearer compile-time error messages, greatly improving the developer experience for future users of the library.
+  Because concrete types are always fully known at compile time, there is no 
+  polymorphic base pointer to manage — and therefore no architectural need for 
+  owning pointers to a base type such as:
+
+```cpp
+  std::unique_ptr<BaseFFT>
+  std::shared_ptr<BaseFFT>
+```
+
+  Note that this is a consequence of the static-dispatch design, not a 
+  rejection of ownership semantics in general.
 
 *   **Template Design & Parallelization (`STFTAnalyzer.hpp`):** 
     The STFT analysis tool is implemented as a heavily templated class to accommodate various underlying data types. It is explicitly designed to leverage parallel computing, ensuring efficient processing of large audio signals.
