@@ -47,7 +47,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace window {
+namespace stft {
 
 /**
  * @class BlackmanWindow
@@ -57,7 +57,7 @@ namespace window {
  * Only implements generate(). All shared logic lives in BaseWindow<BlackmanWindow>.
  *
  * @code
- *   window::BlackmanWindow w(2048);
+ *   stft::BlackmanWindow w(2048);
  *   std::vector<double> frame = getFrame();
  *   w.apply(frame);
  * @endcode
@@ -115,4 +115,4 @@ public:
     }
 };
 
-} // namespace window
+} // namespace stft

@@ -34,7 +34,7 @@
 #include <cmath>     // std::cos
 #include <numbers>   // std::numbers::pi (C++20 mathematical constants)
 
-namespace window {
+namespace stft {
 
 /**
  * @class HannWindow
@@ -47,7 +47,7 @@ namespace window {
  *
  * @code
  *   // Creating and using a Hann window:
- *   window::HannWindow w(1024);
+ *   stft::HannWindow w(1024);
  *   std::vector<double> frame = getFrame();  // 1024 samples
  *   w.apply(frame);                          // window applied in place
  *   // frame is now ready for FFT
@@ -110,4 +110,4 @@ public:
     }
 };
 
-} // namespace window
+} // namespace stft

@@ -70,7 +70,7 @@
 #include <vector>    // std::vector
 #include <concepts>  // std::same_as, std::constructible_from
 
-namespace window {
+namespace stft {
 
 /**
  * @concept WindowFunction
@@ -93,7 +93,7 @@ namespace window {
  *
  * @par Example usage in STFTAnalyzer:
  * @code
- * template<typename FFT, window::WindowFunction Window>
+ * template<typename FFT, stft::WindowFunction Window>
  * class STFTAnalyzer {
  *     // Window is guaranteed to have apply(), size(), etc.
  * };
@@ -101,7 +101,7 @@ namespace window {
  *
  * @par Example: verifying your own class satisfies the concept:
  * @code
- * static_assert(window::WindowFunction<HannWindow>,
+ * static_assert(stft::WindowFunction<HannWindow>,
  *               "HannWindow must satisfy WindowFunction!");
  * @endcode
  */
@@ -170,7 +170,7 @@ concept WindowFunction =
  * @code
  * ASSERT_WINDOW_FUNCTION(HannWindow);
  * // Equivalent to:
- * // static_assert(window::WindowFunction<HannWindow>, "...");
+ * // static_assert(stft::WindowFunction<HannWindow>, "...");
  * @endcode
  *
  * Note: macros (`#define`) are a preprocessor feature — the compiler
@@ -179,10 +179,10 @@ concept WindowFunction =
  */
 #define ASSERT_WINDOW_FUNCTION(Type)                                   \
     static_assert(                                                     \
-        ::window::WindowFunction<Type>,                                \
-        #Type " does not satisfy the WindowFunction concept. "         \
-        "Check that it has: size(), apply(), coefficients(), "         \
-        "coherentGain(), powerBandwidth()."                            \
+        ::stft::WindowFunction<Type>,                                  \
+        #Type " does not satisfy the WindowFunction concept. "           \
+        "Check that it has: size(), apply(), coefficients(), "           \
+        "coherentGain(), powerBandwidth()."                              \
     )
 
-} // namespace window
+} // namespace stft

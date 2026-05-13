@@ -53,7 +53,7 @@
 #include <string>     // std::to_string
 #include <numeric>    // std::accumulate, std::inner_product
 
-namespace window {
+namespace stft {
 
 /**
  * @class BaseWindow
@@ -260,4 +260,4 @@ protected:
     std::vector<double> coeffs_;  ///< Precomputed coefficients w[0..N-1]
 };
 
-} // namespace window
+} // namespace stft

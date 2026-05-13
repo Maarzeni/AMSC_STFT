@@ -15,7 +15,7 @@
 #include <vector>
 #include <concepts>
 
-using namespace window;
+using namespace stft;
 
 // ==========================================
 // COMPILE-TIME CONCEPT VALIDATION

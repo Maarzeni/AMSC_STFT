@@ -12,7 +12,7 @@
 #include <cmath>
 #include <numeric>
 
-using namespace window;
+using namespace stft;
 
 // ==========================================
 // DUMMY WINDOW IMPLEMENTATION FOR TESTING

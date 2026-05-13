@@ -35,7 +35,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace window {
+namespace stft {
 
 /**
  * @class HammingWindow
@@ -45,7 +45,7 @@ namespace window {
  * Only implements generate() — all shared logic lives in BaseWindow<HammingWindow>.
  *
  * @code
- *   window::HammingWindow w(512);
+ *   stft::HammingWindow w(512);
  *   std::vector<double> frame = getFrame();
  *   w.apply(frame);
  * @endcode
@@ -89,4 +89,4 @@ public:
     }
 };
 
-} // namespace window
+} // namespace stft
