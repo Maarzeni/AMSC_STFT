@@ -40,3 +40,28 @@ add_test(NAME IterativeFFTTest COMMAND test_IterativeFFT)
 add_executable(test_ParallelFFT test_ParallelFFT.cpp)
 target_link_libraries(test_ParallelFFT PRIVATE amsc_stft_core GTest::gtest_main OpenMP::OpenMP_CXX)
 add_test(NAME ParallelFFTTest COMMAND test_ParallelFFT)
+
+# --- BaseWindow Test ---
+add_executable(test_BaseWindow test_BaseWindow.cpp)
+target_link_libraries(test_BaseWindow PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME BaseWindowTest COMMAND test_BaseWindow)
+
+# --- WindowConcept Test ---
+add_executable(test_WindowConcept test_WindowConcept.cpp)
+target_link_libraries(test_WindowConcept PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME WindowConceptTest COMMAND test_WindowConcept)
+
+# --- BlackmanWindow Test ---
+add_executable(test_BlackmanWindow test_BlackmanWindow.cpp)
+target_link_libraries(test_BlackmanWindow PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME BlackmanWindowTest COMMAND test_BlackmanWindow)
+
+# --- HammingWindow Test ---
+add_executable(test_HammingWindow test_HammingWindow.cpp)
+target_link_libraries(test_HammingWindow PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME HammingWindowTest COMMAND test_HammingWindow)
+
+# --- HannWindow Test ---
+add_executable(test_HannWindow test_HannWindow.cpp)
+target_link_libraries(test_HannWindow PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME HannWindowTest COMMAND test_HannWindow)
