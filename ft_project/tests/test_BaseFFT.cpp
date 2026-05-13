@@ -45,7 +45,7 @@ static_assert(!IsFFT<InvalidMockFFT>, "ERROR: InvalidMockFFT should NOT satisfy 
 // RUNTIME TEST
 // ==========================================
 
-TEST(ConceptTest, CompileTimeChecksPassed) {
+TEST(BaseFFTTest, CompileTimeChecksPassed) {
     // If the program compiles, the static_asserts above passed successfully.
     // This runtime test simply reports success to GTest.
     SUCCEED() << "C++20 Concepts are working perfectly and are fully isolated!";

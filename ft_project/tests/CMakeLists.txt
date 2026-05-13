@@ -20,10 +20,10 @@ target_link_libraries(test_WavReader PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME WavReaderTest COMMAND test_WavReader)
 
 # --- C++20 Concepts Test ---
-# Create an executable to test compile-time concept validation
-add_executable(test_Concept test_Concept.cpp)
-target_link_libraries(test_Concept PRIVATE amsc_stft_core GTest::gtest_main)
-add_test(NAME ConceptTest COMMAND test_Concept)
+# Create an executable to test compile-time concept validation for BaseFFT
+add_executable(test_BaseFFT test_BaseFFT.cpp)
+target_link_libraries(test_BaseFFT PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME BaseFFTTest COMMAND test_BaseFFT)
 
 # Recursive FFT Test
 add_executable(test_RecursiveFFT test_RecursiveFFT.cpp)

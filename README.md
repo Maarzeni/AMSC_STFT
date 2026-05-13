@@ -271,13 +271,13 @@ Run the test with:
 ```bash
 cd build
 
-ctest --output-on-failure -R ConceptTest
+ctest --output-on-failure -R BaseFFTTest
 ```
 
 or execute the test binary directly:
 
 ```bash
-./tests/test_Concept
+./tests/test_BaseFFT
 ```
 
 ---
