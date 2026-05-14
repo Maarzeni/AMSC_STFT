@@ -8,6 +8,7 @@ This work focuses on developing a C++ framework for spectral analysis of audio s
 
 The project implements a complete pipeline for audio signal analysis, including:
 
+
 - Fast Fourier Transform (FFT) in multiple variants: recursive, iterative, and parallel;
 - Short-Time Fourier Transform (STFT), built on top of the FFT with segmentation of the audio signal into overlapping time frames;
 - Windowing techniques to study spectral resolution effects, including:
