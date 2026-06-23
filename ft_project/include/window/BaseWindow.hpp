@@ -52,8 +52,88 @@
 #include <stdexcept>  // std::invalid_argument, std::logic_error
 #include <string>     // std::to_string
 #include <numeric>    // std::accumulate, std::inner_product
+#include <concepts>   // std::same_as, std::constructible_from
 
 namespace stft {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C++20 CONCEPT: WindowFunction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @concept WindowFunction
+ * @brief Constrains a type W to be a valid window function for STFT use.
+ *
+ * @details
+ * A type W satisfies `WindowFunction` if and only if:
+ *
+ * | Requirement                   | Why it's needed                          |
+ * |-------------------------------|------------------------------------------|
+ * | W(std::size_t)                | Must be constructible with a frame size  |
+ * | w.size() → std::size_t        | STFTAnalyzer needs to know the frame size |
+ * | w.apply(vector<double>&)      | Core operation: window a signal frame    |
+ * | w.coefficients() →            | Needed for normalization / export        |
+ * |   const vector<double>&       |                                          |
+ * | w.coherentGain() → double     | Needed for magnitude normalization       |
+ * | w.powerBandwidth() → double   | Needed for energy analysis               |
+ *
+ * @tparam W  The type to check against this concept.
+ *
+ * @par Example usage in STFTAnalyzer:
+ * @code
+ * template<typename FFT, stft::WindowFunction Window>
+ * class STFTAnalyzer {
+ *     // Window is guaranteed to have apply(), size(), etc.
+ * };
+ * @endcode
+ *
+ * @par Example: verifying your own class satisfies the concept:
+ * @code
+ * static_assert(stft::WindowFunction<HannWindow>,
+ *               "HannWindow must satisfy WindowFunction!");
+ * @endcode
+ */
+template<typename W>
+concept WindowFunction =
+    std::constructible_from<W, std::size_t>
+    &&
+    requires(
+        W w,
+        const W cw,
+        std::vector<double>& sig
+    )
+    {
+        { cw.size() } -> std::same_as<std::size_t>;
+        { w.apply(sig) } -> std::same_as<void>;
+        { cw.coefficients() } -> std::same_as<const std::vector<double>&>;
+        { cw.coherentGain() } -> std::same_as<double>;
+        { cw.powerBandwidth() } -> std::same_as<double>;
+    };
+
+/**
+ * @def ASSERT_WINDOW_FUNCTION
+ * @brief Helper macro to verify at compile-time that a class satisfies WindowFunction.
+ *
+ * @details
+ * Usage: `ASSERT_WINDOW_FUNCTION(HannWindow);` at the bottom of a window header.
+ *
+ * @code
+ * ASSERT_WINDOW_FUNCTION(HannWindow);
+ * // Equivalent to:
+ * // static_assert(stft::WindowFunction<HannWindow>, "...");
+ * @endcode
+ */
+#define ASSERT_WINDOW_FUNCTION(Type)                                   \
+    static_assert(                                                     \
+        ::stft::WindowFunction<Type>,                                  \
+        #Type " does not satisfy the WindowFunction concept. "           \
+        "Check that it has: size(), apply(), coefficients(), "           \
+        "coherentGain(), powerBandwidth()."                              \
+    )
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRTP BASE CLASS: BaseWindow
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @class BaseWindow

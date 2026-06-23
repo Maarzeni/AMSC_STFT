@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 #include "window/HammingWindow.hpp"
-#include "window/WindowConcept.hpp"
+#include "window/BaseWindow.hpp"
 #include <vector>
 #include <cmath>
 #include <numeric>

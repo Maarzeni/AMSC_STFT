@@ -414,3 +414,161 @@ TEST_F(BaseWindowTest, MinimumSize) {
     EXPECT_NEAR(signal[0], 1.0, TOL);
     EXPECT_NEAR(signal[1], 2.0, TOL);
 }
+
+// ==========================================
+// CONCEPT TESTS
+// ==========================================
+
+/**
+ * @brief Compile-time verification that window types satisfy WindowFunction concept.
+ *
+ * @details
+ * These static assertions are evaluated at compile time. If they fail, the
+ * compilation will fail with a clear error message indicating which requirement
+ * is not satisfied.
+ *
+ * The WindowFunction concept requires:
+ *   - Constructibility from std::size_t
+ *   - size() → std::size_t
+ *   - apply(std::vector<double>&) → void
+ *   - coefficients() → const std::vector<double>&
+ *   - coherentGain() → double
+ *   - powerBandwidth() → double
+ */
+
+// ==========================================
+// TEST 16: Concept Verification - RectangularWindow
+// ==========================================
+
+/**
+ * @brief Verifies that RectangularWindow satisfies the WindowFunction concept.
+ */
+TEST_F(BaseWindowTest, ConceptRectangularWindow) {
+    // This test verifies the concept is satisfied at runtime through usage.
+    // The actual concept check happens at compile-time via ASSERT_WINDOW_FUNCTION.
+    
+    RectangularWindow rect(SMALL_SIZE);
+    
+    // These operations are guaranteed to work by the concept
+    EXPECT_EQ(rect.size(), SMALL_SIZE);
+    
+    const auto& coeffs = rect.coefficients();
+    EXPECT_EQ(coeffs.size(), SMALL_SIZE);
+    
+    double cg = rect.coherentGain();
+    EXPECT_GT(cg, 0.0);
+    EXPECT_LE(cg, 1.0);
+    
+    double pw = rect.powerBandwidth();
+    EXPECT_GT(pw, 0.0);
+    
+    std::vector<double> signal(SMALL_SIZE, 1.0);
+    rect.apply(signal);  // Should not throw
+    
+    EXPECT_NO_FATAL_FAILURE();
+}
+
+// ==========================================
+// TEST 17: Concept Verification - TriangularWindow
+// ==========================================
+
+/**
+ * @brief Verifies that TriangularWindow satisfies the WindowFunction concept.
+ */
+TEST_F(BaseWindowTest, ConceptTriangularWindow) {
+    TriangularWindow tri(SMALL_SIZE);
+    
+    EXPECT_EQ(tri.size(), SMALL_SIZE);
+    
+    const auto& coeffs = tri.coefficients();
+    EXPECT_EQ(coeffs.size(), SMALL_SIZE);
+    
+    double cg = tri.coherentGain();
+    EXPECT_GT(cg, 0.0);
+    EXPECT_LE(cg, 1.0);
+    
+    double pw = tri.powerBandwidth();
+    EXPECT_GT(pw, 0.0);
+    
+    std::vector<double> signal(SMALL_SIZE, 1.0);
+    tri.apply(signal);  // Should not throw
+    
+    EXPECT_NO_FATAL_FAILURE();
+}
+
+// ==========================================
+// TEST 18: Concept Requirements - Return Types
+// ==========================================
+
+/**
+ * @brief Compile-time check: verifies return types match WindowFunction requirements.
+ *
+ * @details
+ * This test exists to verify (at runtime) that the methods return the correct
+ * types as specified by the WindowFunction concept. The compile-time verification
+ * happens via ASSERT_WINDOW_FUNCTION macro.
+ */
+TEST_F(BaseWindowTest, ConceptReturnTypes) {
+    RectangularWindow rect(SMALL_SIZE);
+    
+    // size() must return std::size_t (not int, not size_type, exactly std::size_t)
+    static_assert(std::is_same_v<decltype(rect.size()), std::size_t>);
+    
+    // coefficients() must return const std::vector<double>&
+    static_assert(std::is_same_v<
+        decltype(rect.coefficients()),
+        const std::vector<double>&
+    >);
+    
+    // coherentGain() must return double
+    static_assert(std::is_same_v<decltype(rect.coherentGain()), double>);
+    
+    // powerBandwidth() must return double
+    static_assert(std::is_same_v<decltype(rect.powerBandwidth()), double>);
+    
+    // apply() must return void
+    std::vector<double> signal(SMALL_SIZE, 1.0);
+    static_assert(std::is_same_v<decltype(rect.apply(signal)), void>);
+}
+
+// ==========================================
+// TEST 19: Concept - Constructibility Check
+// ==========================================
+
+/**
+ * @brief Verifies that window types are constructible from std::size_t.
+ *
+ * @details
+ * The WindowFunction concept requires that a type W is constructible from
+ * a single std::size_t argument. This is critical for generic code that
+ * creates windows with a given frame size.
+ */
+TEST_F(BaseWindowTest, ConceptConstructibility) {
+    // These should all compile and not throw
+    RectangularWindow rect(SMALL_SIZE);
+    TriangularWindow tri(MEDIUM_SIZE);
+    
+    EXPECT_EQ(rect.size(), SMALL_SIZE);
+    EXPECT_EQ(tri.size(), MEDIUM_SIZE);
+    
+    // Verify that std::constructible_from is satisfied
+    static_assert(std::constructible_from<RectangularWindow, std::size_t>);
+    static_assert(std::constructible_from<TriangularWindow, std::size_t>);
+}
+
+// ==========================================
+// MACRO VERIFICATION
+// ==========================================
+
+/**
+ * @brief Compile-time verification macro for both test windows.
+ *
+ * @details
+ * The ASSERT_WINDOW_FUNCTION macro should be placed at global scope in
+ * production code (e.g., at the end of each concrete window header).
+ * Here, we verify it works correctly by invoking it for our test classes.
+ *
+ * If either assertion fails, the compilation fails with a clear message.
+ */
+ASSERT_WINDOW_FUNCTION(RectangularWindow);
+ASSERT_WINDOW_FUNCTION(TriangularWindow);
