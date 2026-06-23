@@ -1,0 +1,61 @@
+name: AMSC_STFT CI/CD Pipeline
+
+on: [push, pull_request]
+
+jobs:
+  # ─────────────────────────────────────────────────
+  # TASK 1 + 2: Continuous Integration
+  # Executes tests and builds the Singularity container image
+  # ─────────────────────────────────────────────────
+  ci:
+    # Use Ubuntu 22.04 to ensure we have a modern GCC version (11+) for C++20
+    runs-on: ubuntu-22.04
+
+    steps:
+      # Step 1: Downloads the repository code inside the Runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: [Setup] Install C++ HPC dependencies (CMake, OpenMP, OpenMPI)
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake libomp-dev openmpi-bin libopenmpi-dev
+
+      # Step 3: [Build] Configure and compile the C++ project
+      - name: Build Project with CMake
+        run: |
+          cd ft_project
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+
+      # Step 4: [Test] Execute the test suite using CTest
+      - name: Run test suite with CTest
+        run: |
+          cd ft_project/build
+          # OMPI_MCA_rmaps_base_oversubscribe=1 allows MPI to run more processes than physical cores
+          export OMPI_MCA_rmaps_base_oversubscribe=1
+          export OMP_NUM_THREADS=2
+          ctest --output-on-failure
+
+      # Step 5: [Apptainer] Install Apptainer to build the container
+      - name: Install Apptainer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:apptainer/ppa
+          sudo apt-get update -qq
+          sudo apt-get install -y apptainer
+
+      # Step 6: [Container] Build Singularity container image
+      - name: Build Singularity container image
+        run: sudo apptainer build --force amsc_stft.sif Singularity.def
+
+      # Step 7: [Artifact] Save the built container to be downloaded later
+      - name: Upload container artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amsc-stft-sif
+          path: amsc_stft.sif
+          retention-days: 7
