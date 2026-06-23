@@ -11,7 +11,7 @@ From: ubuntu:22.04
     export LC_ALL=C
     export OMPI_MCA_rmaps_base_oversubscribe=1
     # Add the build binaries to the system PATH so they can be run directly
-    export PATH=/app/ft_project/build/examples:/app/ft_project/build/benchmarks:$PATH
+    export PATH=/AMSC_STFT/ft_project/build/examples:/AMSC_STFT/ft_project/build/benchmarks:$PATH
 
 %post
     # Prevent timezone/keyboard interactive dialogs during apt-get
@@ -22,17 +22,17 @@ From: ubuntu:22.04
     apt-get install -y build-essential cmake libomp-dev openmpi-bin libopenmpi-dev
 
     # Build the project inside the container immutably
-    cd /app/ft_project
+    cd /AMSC_STFT/ft_project
     mkdir build && cd build
     cmake .. -DCMAKE_BUILD_TYPE=Release
     make -j$(nproc)
 
 %files
     # Copy the entire ft_project directory into the container
-    ft_project /app/ft_project
+    ft_project /AMSC_STFT/ft_project
 
 %runscript
     # Default execution when running `apptainer run amsc_stft.sif`
     # We execute the main executable, passing any arguments forwarded by the user.
     # Replace "main" with the actual name of your compiled target if different.
-    exec /app/ft_project/build/examples/main "$@"
+    exec /AMSC_STFT/ft_project/build/examples/main "$@"
