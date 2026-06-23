@@ -19,7 +19,7 @@ From: ubuntu:22.04
 
     # Install C++ toolchain, CMake, OpenMP, and MPI
     apt-get update -qq
-    apt-get install -y build-essential cmake libomp-dev openmpi-bin libopenmpi-dev
+    apt-get install -y build-essential cmake git libomp-dev openmpi-bin libopenmpi-dev
 
     # Build the project inside the container immutably
     cd /app/AMSC_STFT/ft_project
