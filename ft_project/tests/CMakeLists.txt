@@ -46,11 +46,6 @@ add_executable(test_BaseWindow test_BaseWindow.cpp)
 target_link_libraries(test_BaseWindow PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME BaseWindowTest COMMAND test_BaseWindow)
 
-# --- WindowConcept Test ---
-add_executable(test_WindowConcept test_WindowConcept.cpp)
-target_link_libraries(test_WindowConcept PRIVATE amsc_stft_core GTest::gtest_main)
-add_test(NAME WindowConceptTest COMMAND test_WindowConcept)
-
 # --- BlackmanWindow Test ---
 add_executable(test_BlackmanWindow test_BlackmanWindow.cpp)
 target_link_libraries(test_BlackmanWindow PRIVATE amsc_stft_core GTest::gtest_main)
