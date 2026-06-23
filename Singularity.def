@@ -23,7 +23,8 @@ From: ubuntu:22.04
 
     # Build the project inside the container immutably
     cd /AMSC_STFT/ft_project
-    mkdir build && cd build
+    mkdir -p build
+    cd build
     cmake .. -DCMAKE_BUILD_TYPE=Release
     make -j$(nproc)
 
