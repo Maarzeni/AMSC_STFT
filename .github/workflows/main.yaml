@@ -60,3 +60,60 @@ jobs:
           name: amsc-stft-sif
           path: amsc_stft.sif
           retention-days: 7
+
+  # ─────────────────────────────────────────────────
+  # TASK 3 + 4: Continuous Deployment
+  # Deploy on Galileo100 and submit the SLURM job
+  # NOTE: This job depends on the successful completion of the 'ci' job, ensuring that deployment only occurs if tests pass and the container is built correctly.
+  # ─────────────────────────────────────────────────
+  cd:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download container artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: amsc-stft-sif
+
+      # Configures SSH access to the Galileo100 cluster using the provided secrets
+      - name: Configure SSH access to Galileo100
+        run: |
+          mkdir -p ~/.ssh
+          
+          # Stores the private key in a neutral filename
+          echo "${{ secrets.HPC_SSH_PRIVATE_KEY }}" > ~/.ssh/cineca_key
+          chmod 600 ~/.ssh/cineca_key
+          
+          # Stores the SSH certificate
+          echo "${{ secrets.HPC_CERT }}" > ~/.ssh/cineca_key-cert.pub
+          chmod 644 ~/.ssh/cineca_key-cert.pub
+
+      # Transfers necessary files (container, script, input data) to the Galileo100 cluster using scp
+      - name: Deploy files to Galileo100 scratch
+        env:
+          REMOTE_USER: ${{ secrets.HPC_USERNAME }}
+          REMOTE_PATH: ${{ secrets.HPC_SCRATCH_PATH }}
+          SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
+        run: |
+          REMOTE="${REMOTE_USER}@login.g100.cineca.it"
+
+          # Creates the required folder structure on the cluster
+          ssh $SSH_OPTS ${REMOTE} \
+            "mkdir -p ${REMOTE_PATH}/input ${REMOTE_PATH}/results"
+
+          # Copies the container, SLURM script, and input data
+          scp $SSH_OPTS amsc_stft.sif  ${REMOTE}:${REMOTE_PATH}/
+          scp $SSH_OPTS job.sh             ${REMOTE}:${REMOTE_PATH}/
+
+      # Submits the SLURM job from the login node
+      - name: Submit SLURM job via sbatch
+        env:
+          SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
+        run: |
+          ssh $SSH_OPTS \
+            ${{ secrets.HPC_USERNAME }}@login.g100.cineca.it \
+            "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch job.sh"
