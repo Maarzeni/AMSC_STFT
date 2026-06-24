@@ -19,7 +19,7 @@ From: ubuntu:22.04
 
     # Install C++ toolchain, CMake, OpenMP, and MPI
     apt-get update -qq
-    cat requirements.txt | grep -v '^#' | xargs sudo apt-get install -y
+    cat /requirements.txt | grep -v '^#' | xargs apt-get install -y
 
     # Build the project inside the container immutably
     cd /app/AMSC_STFT/ft_project
@@ -32,6 +32,7 @@ From: ubuntu:22.04
 %files
     # Copy the entire ft_project directory into the container
     ft_project /app/AMSC_STFT/ft_project
+    requirements.txt /requirements.txt
 
 %runscript
     # Default execution when running `apptainer run amsc_stft.sif`
