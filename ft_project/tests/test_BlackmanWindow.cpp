@@ -460,3 +460,28 @@ TEST_F(BlackmanWindowTest, MultiSizeFormulasVerification) {
         }
     }
 }
+
+// ==========================================
+// CALLABLE OBJECT (FUNCTOR) TEST
+// ==========================================
+
+// Compile-time check: BlackmanWindow is callable as a functor on a frame.
+static_assert(std::is_invocable_r_v<void, BlackmanWindow&, std::vector<double>&>,
+              "BlackmanWindow must be callable as a functor on a frame.");
+
+/**
+ * @brief operator() produces the same result as apply().
+ */
+TEST_F(BlackmanWindowTest, OperatorCallMatchesApply) {
+    BlackmanWindow w(MEDIUM_SIZE);
+
+    std::vector<double> signal_apply(MEDIUM_SIZE, 1.0);
+    std::vector<double> signal_call(MEDIUM_SIZE, 1.0);
+
+    w.apply(signal_apply);
+    w(signal_call);
+
+    ASSERT_EQ(signal_apply.size(), signal_call.size());
+    for (std::size_t i = 0; i < MEDIUM_SIZE; ++i)
+        EXPECT_DOUBLE_EQ(signal_apply[i], signal_call[i]);
+}

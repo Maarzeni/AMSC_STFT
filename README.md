@@ -122,6 +122,35 @@ ft_project/
   Note that this is a consequence of the static-dispatch design, not a 
   rejection of ownership semantics in general.
 
+*   **Windowing as Callable Objects (`window/`):**
+    All window classes (`HannWindow`, `HammingWindow`, `BlackmanWindow`) are **functors** — stateful objects that overload `operator()`. This means a window can be invoked directly as a callable:
+
+    ```cpp
+    HannWindow w(1024);
+    w(frame);          // functor call syntax  (new)
+    w.apply(frame);    // explicit method call  (still works)
+    ```
+
+    **Why callable objects?** The windows were already stateful function-like objects (holding precomputed coefficients); making `operator()` explicit is the idiomatic C++ step that lets them participate as first-class callables alongside free functions and lambdas — exactly the interchangeability described in the lecture on callable objects.
+
+    **Advantages over `apply()`-only:**
+    - More natural call syntax matching the mathematical notion of *applying* w to a frame.
+    - Can be passed to any generic/STL context that accepts a callable (e.g. `std::function`, template parameters, algorithms) without wrappers.
+    - Easier extensibility: a future `STFTAnalyzer` can accept `any` callable window — a lambda, a custom struct, or one of the provided classes — through the same template parameter.
+    - **Zero overhead**: `operator()` is a one-line inline delegation to `apply()`; no type erasure, no extra allocation, no performance change.
+
+    The `WindowFunction` C++20 concept has been extended to require the callable interface alongside the existing spectral-metadata requirements (`coherentGain()`, `powerBandwidth()`), so that generic STFT code can rely on call syntax while also accessing normalization data:
+
+    ```cpp
+    template<stft::WindowFunction W>
+    void processFrame(W& window, std::vector<double>& frame) {
+        window(frame);                         // apply window
+        auto gain = window.coherentGain();     // use metadata for normalization
+    }
+    ```
+
+    **How it integrates in the STFT pipeline:** each overlapping frame is windowed by invoking `window(frame)` immediately before the FFT. The same window object provides `coherentGain()` and `powerBandwidth()` for spectral normalization of the output.
+
 *   **Template Design & Parallelization (`STFTAnalyzer.hpp`):** 
     The STFT analysis tool is implemented as a heavily templated class to accommodate various underlying data types. It is explicitly designed to leverage parallel computing, ensuring efficient processing of large audio signals.
 

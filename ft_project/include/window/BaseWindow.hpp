@@ -34,6 +34,7 @@
  * ─── What every derived class gets for free ───────────────────────────────────
  *   - coeffs_         : the precomputed coefficient vector
  *   - apply()         : element-wise multiply (the hot-path method)
+ *   - operator()      : functor call syntax — `window(frame)` (delegates to apply)
  *   - size()          : returns N
  *   - coefficients()  : read-only access to coeffs_
  *   - coherentGain()  : spectral normalization metric
@@ -72,6 +73,7 @@ namespace stft {
  * | W(std::size_t)                | Must be constructible with a frame size  |
  * | w.size() → std::size_t        | STFTAnalyzer needs to know the frame size |
  * | w.apply(vector<double>&)      | Core operation: window a signal frame    |
+ * | w(vector<double>&)            | Functor call syntax (delegates to apply) |
  * | w.coefficients() →            | Needed for normalization / export        |
  * |   const vector<double>&       |                                          |
  * | w.coherentGain() → double     | Needed for magnitude normalization       |
@@ -105,6 +107,7 @@ concept WindowFunction =
     {
         { cw.size() } -> std::same_as<std::size_t>;
         { w.apply(sig) } -> std::same_as<void>;
+        { w(sig) } -> std::same_as<void>;
         { cw.coefficients() } -> std::same_as<const std::vector<double>&>;
         { cw.coherentGain() } -> std::same_as<double>;
         { cw.powerBandwidth() } -> std::same_as<double>;
@@ -255,6 +258,28 @@ public:
         for (std::size_t i = 0; i < N_; ++i)
             signal[i] *= coeffs_[i];
     }
+
+    // ── Functor call operator ─────────────────────────────────────────────────
+    /**
+     * @brief Functor call syntax: windows a frame in place.
+     *
+     * @details
+     * Makes every window a callable object (functor). Equivalent to apply(),
+     * but allows a window to be invoked as `window(frame)` and used
+     * interchangeably with free functions and lambdas in generic code.
+     * Delegates to apply() so the windowing logic lives in exactly one place.
+     *
+     * Example:
+     * @code
+     *   HannWindow w(1024);
+     *   w(frame);          // functor syntax  — same as w.apply(frame)
+     *   w.apply(frame);    // explicit syntax  — still works unchanged
+     * @endcode
+     *
+     * @param signal Frame buffer, modified in place.
+     * @throws std::invalid_argument if signal.size() != size().
+     */
+    void operator()(std::vector<double>& signal) const { apply(signal); }
 
     // ── Accessors ────────────────────────────────────────────────────────────
 

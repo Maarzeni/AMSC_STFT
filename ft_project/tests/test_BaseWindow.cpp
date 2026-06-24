@@ -572,3 +572,60 @@ TEST_F(BaseWindowTest, ConceptConstructibility) {
  */
 ASSERT_WINDOW_FUNCTION(RectangularWindow);
 ASSERT_WINDOW_FUNCTION(TriangularWindow);
+
+// ==========================================
+// CALLABLE OBJECT (FUNCTOR) TESTS
+// ==========================================
+
+// Compile-time check: windows satisfy std::is_invocable_r for the frame call.
+static_assert(std::is_invocable_r_v<void, RectangularWindow&, std::vector<double>&>,
+              "RectangularWindow must be callable as a functor on a frame.");
+static_assert(std::is_invocable_r_v<void, TriangularWindow&, std::vector<double>&>,
+              "TriangularWindow must be callable as a functor on a frame.");
+
+/**
+ * @brief operator() produces the same result as apply().
+ *
+ * @details
+ * Both call paths must be equivalent: apply() is the canonical implementation
+ * and operator() delegates to it, so element-wise results must match exactly.
+ */
+TEST_F(BaseWindowTest, OperatorCallMatchesApply) {
+    RectangularWindow w(MEDIUM_SIZE);
+
+    std::vector<double> signal_apply(MEDIUM_SIZE, 2.0);
+    std::vector<double> signal_call(MEDIUM_SIZE, 2.0);
+
+    w.apply(signal_apply);
+    w(signal_call);
+
+    ASSERT_EQ(signal_apply.size(), signal_call.size());
+    for (std::size_t i = 0; i < MEDIUM_SIZE; ++i)
+        EXPECT_DOUBLE_EQ(signal_apply[i], signal_call[i]);
+}
+
+/**
+ * @brief operator() propagates the size-mismatch exception from apply().
+ */
+TEST_F(BaseWindowTest, OperatorCallThrowsOnSizeMismatch) {
+    RectangularWindow w(MEDIUM_SIZE);
+    std::vector<double> wrong_size(MEDIUM_SIZE + 1, 1.0);
+    EXPECT_THROW(w(wrong_size), std::invalid_argument);
+}
+
+/**
+ * @brief operator() works on both RectangularWindow and TriangularWindow,
+ *        verifying the functor interface through the CRTP hierarchy.
+ */
+TEST_F(BaseWindowTest, OperatorCallWorksForDifferentWindowTypes) {
+    TriangularWindow w(MEDIUM_SIZE);
+
+    std::vector<double> signal_apply(MEDIUM_SIZE, 3.0);
+    std::vector<double> signal_call(MEDIUM_SIZE, 3.0);
+
+    w.apply(signal_apply);
+    w(signal_call);
+
+    for (std::size_t i = 0; i < MEDIUM_SIZE; ++i)
+        EXPECT_DOUBLE_EQ(signal_apply[i], signal_call[i]);
+}
