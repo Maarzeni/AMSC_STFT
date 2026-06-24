@@ -170,6 +170,35 @@ ft_project/
     To adhere to the Single Responsibility Principle, the benchmarking suite has been decoupled from the core library and moved to a standalone benchmarks/ directory. End-users download amsc_stft_core for high-performance signal processing, not to run developer performance tests. Embedding benchmark code inside the core library needlessly inflates compilation times and binary size.
 
 
+### CI/CD Pipeline
+
+A GitHub Actions pipeline defined in [.github/workflows/main.yaml](.github/workflows/main.yaml) runs automatically on every **push** and **pull request**.
+
+It consists of two sequential jobs:
+
+#### 1. `ci` — Continuous Integration (GitHub-hosted runner, `ubuntu-22.04`)
+
+| Step | Action |
+|------|--------|
+| Install dependencies | Reads `requirements.txt` and installs CMake, OpenMP, OpenMPI via `apt-get` |
+| Build | Configures and compiles the project with `cmake` + `make -j` |
+| Test | Executes the full test suite via `ctest --output-on-failure` |
+| Build container | Installs Apptainer and builds the Singularity image `amsc_stft.sif` from `Singularity.def` |
+| Upload artifact | Saves `amsc_stft.sif` as a workflow artifact (retained 7 days) |
+
+#### 2. `cd` — Continuous Deployment (runs only if `ci` passes)
+
+| Step | Action |
+|------|--------|
+| Download artifact | Retrieves `amsc_stft.sif` built in the previous job |
+| Configure SSH | Sets up key-based access to the Galileo100 cluster using repository secrets (`HPC_SSH_PRIVATE_KEY`, `HPC_CERT`) |
+| Deploy | Copies `amsc_stft.sif` and `job.sh` to the HPC scratch directory via `scp` |
+| Submit job | Connects via SSH to `login.g100.cineca.it` and submits `job.sh` with `sbatch` |
+
+The deployment requires three repository secrets to be configured: `HPC_USERNAME`, `HPC_SSH_PRIVATE_KEY`, `HPC_CERT`, and `HPC_SCRATCH_PATH`.
+
+---
+
 ### Build
 
 ```bash
