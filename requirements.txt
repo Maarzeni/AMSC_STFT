@@ -1,0 +1,11 @@
+# Compilatori e tool di build
+
+build-essential
+cmake
+git
+
+# Librerie HPC (High Performance Computing)
+
+libomp-dev
+openmpi-bin
+libopenmpi-dev
