@@ -37,11 +37,24 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(amsc_stft_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
+# ── MPI distributed layer ─────────────────────────────────────────────────────
+# Kept separate from amsc_stft_core so that non-MPI consumers (tests, serial
+# benchmarks) do not need an MPI toolchain.
+find_package(MPI REQUIRED)
+
+add_library(amsc_stft_mpi src/mpi/MPIContext.cpp)
+
+target_include_directories(amsc_stft_mpi PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+
+target_link_libraries(amsc_stft_mpi PUBLIC
+    amsc_stft_core
+    MPI::MPI_CXX)
 
 # Enable testing support
 enable_testing()
 
 # Project subdirectories
 add_subdirectory(tests)
-# add_subdirectory(examples)    # Enable when example applications are added
+add_subdirectory(examples)
 # add_subdirectory(benchmarks)  # Enable when benchmarking/HPC support is ready

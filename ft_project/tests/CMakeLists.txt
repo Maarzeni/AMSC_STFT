@@ -60,3 +60,24 @@ add_test(NAME HammingWindowTest COMMAND test_HammingWindow)
 add_executable(test_HannWindow test_HannWindow.cpp)
 target_link_libraries(test_HannWindow PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME HannWindowTest COMMAND test_HannWindow)
+
+# --- STFTAnalyzer Test (serial, no MPI) ---
+add_executable(test_STFTAnalyzer test_STFTAnalyzer.cpp)
+target_link_libraries(test_STFTAnalyzer PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME STFTAnalyzerTest COMMAND test_STFTAnalyzer)
+
+# --- MPI_STFTAnalyzer Test (distributed, requires mpirun) ---
+# Uses MPIEXEC_EXECUTABLE and related variables set by find_package(MPI).
+add_executable(test_MPI_STFTAnalyzer test_MPI_STFTAnalyzer.cpp)
+target_link_libraries(test_MPI_STFTAnalyzer PRIVATE amsc_stft_mpi GTest::gtest_main)
+
+if(MPIEXEC_EXECUTABLE)
+    add_test(
+        NAME MPISTFTTest
+        COMMAND ${MPIEXEC_EXECUTABLE}
+                ${MPIEXEC_NUMPROC_FLAG} 2
+                ${MPIEXEC_PREFLAGS}
+                $<TARGET_FILE:test_MPI_STFTAnalyzer>
+                ${MPIEXEC_POSTFLAGS}
+    )
+endif()
