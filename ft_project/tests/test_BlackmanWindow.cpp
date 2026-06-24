@@ -461,14 +461,6 @@ TEST_F(BlackmanWindowTest, MultiSizeFormulasVerification) {
     }
 }
 
-// ==========================================
-// CALLABLE OBJECT (FUNCTOR) TEST
-// ==========================================
-
-// Compile-time check: BlackmanWindow is callable as a functor on a frame.
-static_assert(std::is_invocable_r_v<void, BlackmanWindow&, std::vector<double>&>,
-              "BlackmanWindow must be callable as a functor on a frame.");
-
 /**
  * @brief operator() produces the same result as apply().
  */

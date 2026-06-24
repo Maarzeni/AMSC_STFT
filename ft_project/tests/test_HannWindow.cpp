@@ -484,14 +484,6 @@ TEST_F(HannWindowTest, EnergyPreservation) {
         << "Energy is not preserved correctly";
 }
 
-// ==========================================
-// CALLABLE OBJECT (FUNCTOR) TEST
-// ==========================================
-
-// Compile-time check: HannWindow is callable as a functor on a frame.
-static_assert(std::is_invocable_r_v<void, HannWindow&, std::vector<double>&>,
-              "HannWindow must be callable as a functor on a frame.");
-
 /**
  * @brief operator() produces the same result as apply().
  *

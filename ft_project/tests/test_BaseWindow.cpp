@@ -512,23 +512,23 @@ TEST_F(BaseWindowTest, ConceptReturnTypes) {
     RectangularWindow rect(SMALL_SIZE);
     
     // size() must return std::size_t (not int, not size_type, exactly std::size_t)
-    static_assert(std::is_same_v<decltype(rect.size()), std::size_t>);
-    
+    static_assert(std::same_as<decltype(rect.size()), std::size_t>);
+
     // coefficients() must return const std::vector<double>&
-    static_assert(std::is_same_v<
+    static_assert(std::same_as<
         decltype(rect.coefficients()),
         const std::vector<double>&
     >);
-    
+
     // coherentGain() must return double
-    static_assert(std::is_same_v<decltype(rect.coherentGain()), double>);
-    
+    static_assert(std::same_as<decltype(rect.coherentGain()), double>);
+
     // powerBandwidth() must return double
-    static_assert(std::is_same_v<decltype(rect.powerBandwidth()), double>);
-    
+    static_assert(std::same_as<decltype(rect.powerBandwidth()), double>);
+
     // apply() must return void
     std::vector<double> signal(SMALL_SIZE, 1.0);
-    static_assert(std::is_same_v<decltype(rect.apply(signal)), void>);
+    static_assert(std::same_as<decltype(rect.apply(signal)), void>);
 }
 
 // ==========================================
@@ -576,12 +576,6 @@ ASSERT_WINDOW_FUNCTION(TriangularWindow);
 // ==========================================
 // CALLABLE OBJECT (FUNCTOR) TESTS
 // ==========================================
-
-// Compile-time check: windows satisfy std::is_invocable_r for the frame call.
-static_assert(std::is_invocable_r_v<void, RectangularWindow&, std::vector<double>&>,
-              "RectangularWindow must be callable as a functor on a frame.");
-static_assert(std::is_invocable_r_v<void, TriangularWindow&, std::vector<double>&>,
-              "TriangularWindow must be callable as a functor on a frame.");
 
 /**
  * @brief operator() produces the same result as apply().

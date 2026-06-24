@@ -488,14 +488,6 @@ TEST_F(HammingWindowTest, NarrowerMainLobe) {
         << "Hamming should have ENBW < 1.5 for good frequency resolution";
 }
 
-// ==========================================
-// CALLABLE OBJECT (FUNCTOR) TEST
-// ==========================================
-
-// Compile-time check: HammingWindow is callable as a functor on a frame.
-static_assert(std::is_invocable_r_v<void, HammingWindow&, std::vector<double>&>,
-              "HammingWindow must be callable as a functor on a frame.");
-
 /**
  * @brief operator() produces the same result as apply().
  */

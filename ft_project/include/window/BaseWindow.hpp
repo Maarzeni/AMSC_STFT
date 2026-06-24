@@ -152,15 +152,13 @@ template<typename Derived>
 class BaseWindow {
 
     // ── Compile-time guard ───────────────────────────────────────────────────
-    // `static_assert` is evaluated entirely by the compiler, before the
-    // program runs. If the condition is false, compilation stops with
-    // the message below.
-    //
-    // `std::is_same_v<A, B>` is a compile-time boolean: true if A and B
-    // are the exact same type. We negate it with `!`.
-    // Goal: prevent BaseWindow<BaseWindow<...>> (accidental infinite type).
+    // Prevents BaseWindow<BaseWindow<...>> (accidental infinite CRTP cycle).
+    // We use static_assert here because the template parameter `Derived`
+    // self-references `BaseWindow` at the point where the template head is
+    // parsed, so a `requires` constraint in the template declaration would
+    // create a circular dependency that the compiler cannot resolve.
     static_assert(
-        !std::is_same_v<Derived, BaseWindow>,
+        !std::same_as<Derived, BaseWindow>,
         "Do not instantiate BaseWindow directly. "
         "Use HannWindow, HammingWindow, or BlackmanWindow."
     );
