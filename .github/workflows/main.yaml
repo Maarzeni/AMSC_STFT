@@ -20,7 +20,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update -qq
-          cat system_requirements.txt | grep -v '^#' | xargs sudo apt-get install -y
+          cat requirements.txt | grep -v '^#' | xargs sudo apt-get install -y
 
       # Step 3: [Build] Configure and compile the C++ project
       - name: Build Project with CMake
