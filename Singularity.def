@@ -38,4 +38,4 @@ From: ubuntu:22.04
     # Default execution when running `apptainer run amsc_stft.sif`
     # We execute the main executable, passing any arguments forwarded by the user.
     # Replace "main" with the actual name of your compiled target if different.
-    exec app/AMSC_STFT/ft_project/build/examples/main "$@"
+    exec /app/AMSC_STFT/ft_project/build/examples/main "$@"
