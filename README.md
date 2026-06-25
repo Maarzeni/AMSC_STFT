@@ -227,6 +227,42 @@ The `benchmarks/` directory contains a dedicated benchmarking suite for evaluati
 
 The benchmark infrastructure is intentionally decoupled from the core library, following the Single Responsibility Principle. For distributed benchmarking on HPC clusters, `benchmark_MPI_Main.cpp` serves as the entry point.
 
+Both benchmark executables accept two optional arguments: `[reps] [warmup]` (number of timed repetitions and warm-up iterations).
+
+### Serial / OpenMP benchmarks
+
+Compares the FFT engines (`RecursiveFFT`, `IterativeFFT`, `ParallelFFT`) and the serial vs OpenMP STFT:
+
+```bash
+cd build
+
+# Default run (7 repetitions, 2 warm-up iterations)
+./benchmarks/benchmark_Main
+
+# Custom repetitions / warm-up
+./benchmarks/benchmark_Main 10 3
+
+# Control the OpenMP thread count for the parallel sections
+OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
+```
+
+### MPI / hybrid benchmarks
+
+Compares pure MPI against hybrid MPI + OpenMP. Vary `-np` across runs to read the strong-scaling behaviour:
+
+```bash
+cd build
+
+# Pure MPI: 1 OpenMP thread per rank
+mpirun -np 4 ./benchmarks/benchmark_MPI_Main
+
+# Hybrid MPI + OpenMP: multiple threads per rank
+OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main
+
+# Single-rank baseline
+mpirun -np 1 ./benchmarks/benchmark_MPI_Main
+```
+
 ---
 
 ## Additional Notes
