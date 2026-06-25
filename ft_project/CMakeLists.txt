@@ -57,4 +57,4 @@ enable_testing()
 # Project subdirectories
 add_subdirectory(tests)
 add_subdirectory(examples)
-# add_subdirectory(benchmarks)  # Enable when benchmarking/HPC support is ready
+add_subdirectory(benchmarks)
