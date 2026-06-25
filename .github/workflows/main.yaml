@@ -8,7 +8,7 @@ jobs:
   # Executes tests and builds the Singularity container image
   # ─────────────────────────────────────────────────
   ci:
-    # Use Ubuntu 22.04 to ensure we have a modern GCC version (11+) for C++20
+    # Use Ubuntu 22.04 to ensure we have a modern GCC version (11+) for C++20 TODO: ubuntu latest?
     runs-on: ubuntu-22.04
 
     steps:
@@ -68,7 +68,7 @@ jobs:
   # ─────────────────────────────────────────────────
   cd:
     needs: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # TODO: 22.04
 
     steps:
       - name: Checkout repository

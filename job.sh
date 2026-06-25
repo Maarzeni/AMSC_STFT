@@ -20,14 +20,16 @@ fi
 
 echo "Running tests from the immutable container..."
 
-# Diciamo ad OpenMP di usare le CPU riservate da SLURM
+# Tell OpenMP to use the CPUs reserved by SLURM
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-# Dato che il codice è GIÀ STATO COMPILATO dentro il container in /app/...
-# Noi diciamo a Singularity di posizionarsi in quella cartella interna (--pwd /app/...)
-# ed eseguire direttamente i test con ctest!
+# Since the code has ALREADY BEEN COMPILED inside the container in /app/...
+# we tell Singularity to move into that internal folder (--pwd /app/...)
+# and run the tests directly with ctest!
 singularity exec --bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR} \
   --pwd /app/AMSC_STFT/ft_project/build \
   amsc_stft.sif ctest --output-on-failure
+
+# TODO: add benchmarks and examples here
 
 echo "Analysis completed!"

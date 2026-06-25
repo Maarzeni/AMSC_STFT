@@ -12,9 +12,9 @@
  * inside the implementation.
  *
  * ─── Parallelism strategy ────────────────────────────────────────────────────
- * The outer frame loop is parallelised with OpenMP.  Because both Window and
+ * The outer frame loop is parallelised with OpenMP. Because both Window and
  * FFT modify their data in-place, each OpenMP thread constructs its own private
- * Window and FFT instances (declared inside the loop body).  This approach
+ * Window and FFT instances (declared inside the loop body). This approach
  * requires no synchronisation and scales linearly with the number of cores.
  *
  * Use IterativeFFT as the FFT parameter when running with OpenMP; ParallelFFT
