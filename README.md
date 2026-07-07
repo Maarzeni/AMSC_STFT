@@ -166,7 +166,27 @@ ctest --output-on-failure
 
 ## Main Tests Description
 
-<!-- To be completed -->
+### Numerical validation of the FFT
+
+The correctness of the fast transforms is validated at several levels:
+
+- **Analytical reference cases** (`test_RecursiveFFT`, `test_IterativeFFT`): known input/output pairs such as the Dirac impulse $[1,0,0,0] \rightarrow [1,1,1,1]$ and a constant (DC) signal, whose transform is known in closed form.
+- **Forward/inverse round-trip**: a multi-frequency synthetic signal is transformed and then inverse-transformed; the reconstruction must match the original within `1e-9`, verifying that `forward` and `inverse` are mutually consistent.
+- **Direct DFT comparison** (`test_DFTReference`): on small sizes ($N = 4, 8, 16$) the output of `RecursiveFFT` and `IterativeFFT` is compared element-by-element against a naive $O(N^2)$ Discrete Fourier Transform,
+
+$$X[k] = \sum_{n=0}^{N-1} x[n] \cdot e^{-i 2\pi k n / N},$$
+
+  computed directly from the definition. The direct DFT is trivially correct by construction and independent of the divide-and-conquer / bit-reversal logic, so it provides an authoritative reference for the fast implementations (both forward and the normalized inverse). The same test also cross-checks the recursive and iterative engines against each other.
+
+### Time-frequency validation
+
+- **Synthetic signals with known frequencies** (`test_STFTAnalyzer`): a bin-aligned sinusoid produces its spectral peak at the expected frequency bin, and a DC signal concentrates its energy in bin 0, confirming that framing, windowing and the FFT are wired together correctly.
+
+### Structural and parallel tests
+
+- **Window functions** (`test_HannWindow`, `test_HammingWindow`, `test_BlackmanWindow`): coefficient values and symmetry properties.
+- **C++20 concept validation** (`test_BaseFFT`): compile-time check that each FFT engine satisfies the `IsFFT` concept.
+- **Distributed STFT** (`test_MPI_STFTAnalyzer`): the MPI result is checked for consistency with the serial `STFTAnalyzer` output.
 
 ---
 
