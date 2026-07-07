@@ -31,6 +31,7 @@
 #pragma once
 
 #include "BaseWindow.hpp"
+#include <algorithm>  // std::clamp
 #include <cmath>     // std::cos
 #include <numbers>   // std::numbers::pi (C++20 mathematical constants)
 

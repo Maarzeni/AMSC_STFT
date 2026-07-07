@@ -44,6 +44,7 @@
 #pragma once
 
 #include "BaseWindow.hpp"
+#include <algorithm>  // std::clamp
 #include <cmath>
 #include <numbers>
 
