@@ -311,3 +311,4 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 
 ## TO DO
 - scrivere nel readme il tutorial di come inserire le chiavi di github
+- togliere warning dalla compilazione
