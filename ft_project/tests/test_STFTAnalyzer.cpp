@@ -141,6 +141,129 @@ TEST_F(STFTAnalyzerTest, BinAlignedSinusoidPeaksAtCorrectBin) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 4b. Multi-tone signal with known frequencies
+//
+// A sum of three bin-aligned sinusoids with distinct amplitudes. Because each
+// component sits exactly on a bin, the STFT must recover all three peaks at the
+// expected bins, with the correct relative amplitudes, in every frame.
+//
+// Normalization note: computeFrame divides by (frameSize * coherentGain), i.e.
+// by sum(w). For a real sinusoid of amplitude A the one-sided magnitude at the
+// peak bin is therefore A/2, and the two adjacent bins hold ~A/4 (Hann main
+// lobe). Amplitudes are chosen so that the side lobe of one component stays
+// below the peak of the next (0.25 < 0.30), keeping the peaks unambiguous.
+// ══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Bin index and amplitude of each synthetic component.
+constexpr std::size_t kToneBins[3] = {8, 32, 96};
+constexpr double      kToneAmps[3] = {1.0, 0.6, 0.3};
+
+// Tolerances calibrated on the measured output (peak error < 1e-5,
+// noise floor far from the components < 4e-5).
+constexpr double kPeakTol  = 1e-3;
+constexpr double kFloorTol = 1e-3;
+
+// x[n] = sum_i A_i * sin(2*pi*k_i*n / frameSize)
+std::vector<double> makeMultiTone(std::size_t length, std::size_t frameSize) {
+    std::vector<double> signal(length, 0.0);
+    for (std::size_t n = 0; n < length; ++n)
+        for (int c = 0; c < 3; ++c)
+            signal[n] += kToneAmps[c] *
+                std::sin(2.0 * std::numbers::pi * kToneBins[c] * n /
+                         static_cast<double>(frameSize));
+    return signal;
+}
+
+} // namespace
+
+TEST_F(STFTAnalyzerTest, MultiToneSignalPeaksAtAllExpectedBins) {
+    const auto signal = makeMultiTone(FRAME + 5 * HOP, FRAME);
+    const auto spec   = analyzer.analyze(signal);
+
+    ASSERT_FALSE(spec.empty());
+    const std::size_t mid = spec.numFrames / 2;
+
+    for (int c = 0; c < 3; ++c) {
+        const std::size_t k = kToneBins[c];
+
+        // The expected bin must be a strict local maximum.
+        EXPECT_GT(spec.at(mid, k), spec.at(mid, k - 1))
+            << "bin " << k << " should exceed its lower neighbour";
+        EXPECT_GT(spec.at(mid, k), spec.at(mid, k + 1))
+            << "bin " << k << " should exceed its upper neighbour";
+
+        // And carry the expected amplitude A/2.
+        EXPECT_NEAR(spec.at(mid, k), kToneAmps[c] / 2.0, kPeakTol)
+            << "amplitude mismatch at bin " << k;
+    }
+
+    // Bins far from every component must be essentially silent.
+    for (std::size_t b = 0; b < spec.numBins; ++b) {
+        bool nearTone = false;
+        for (int c = 0; c < 3; ++c)
+            if (b + 3 >= kToneBins[c] && b <= kToneBins[c] + 3) nearTone = true;
+
+        if (!nearTone)
+            EXPECT_LT(spec.at(mid, b), kFloorTol)
+                << "unexpected energy at bin " << b;
+    }
+}
+
+TEST_F(STFTAnalyzerTest, MultiTonePreservesAmplitudeOrdering) {
+    const auto signal = makeMultiTone(FRAME + 5 * HOP, FRAME);
+    const auto spec   = analyzer.analyze(signal);
+
+    ASSERT_FALSE(spec.empty());
+    const std::size_t mid = spec.numFrames / 2;
+
+    // Amplitudes are 1.0 > 0.6 > 0.3, so the peaks must follow the same order:
+    // windowing and normalization must not distort relative magnitudes.
+    EXPECT_GT(spec.at(mid, kToneBins[0]), spec.at(mid, kToneBins[1]));
+    EXPECT_GT(spec.at(mid, kToneBins[1]), spec.at(mid, kToneBins[2]));
+
+    // Ratios between components are preserved as well.
+    EXPECT_NEAR(spec.at(mid, kToneBins[1]) / spec.at(mid, kToneBins[0]),
+                kToneAmps[1] / kToneAmps[0], 1e-3);
+    EXPECT_NEAR(spec.at(mid, kToneBins[2]) / spec.at(mid, kToneBins[0]),
+                kToneAmps[2] / kToneAmps[0], 1e-3);
+}
+
+TEST_F(STFTAnalyzerTest, MultiTonePeakFrequenciesMatchKnownValues) {
+    const auto signal = makeMultiTone(FRAME + 5 * HOP, FRAME);
+    const auto spec   = analyzer.analyze(signal);
+
+    ASSERT_FALSE(spec.empty());
+
+    // Tie the peak bins back to physical frequencies: k * SR / FRAME.
+    // ≈ 344.5 Hz, 1378.1 Hz, 4134.4 Hz for k = 8, 32, 96 at 44.1 kHz.
+    for (int c = 0; c < 3; ++c) {
+        const double expectedHz =
+            static_cast<double>(kToneBins[c]) * SR / static_cast<double>(FRAME);
+
+        EXPECT_NEAR(spec.binFrequency(kToneBins[c]), expectedHz, 1e-6)
+            << "frequency mismatch for component " << c;
+    }
+}
+
+TEST_F(STFTAnalyzerTest, MultiToneIsStableAcrossFrames) {
+    const auto signal = makeMultiTone(FRAME + 5 * HOP, FRAME);
+    const auto spec   = analyzer.analyze(signal);
+
+    ASSERT_FALSE(spec.empty());
+    ASSERT_GT(spec.numFrames, 1u);
+
+    // The signal is stationary and every frame starts at a multiple of HOP,
+    // so each component is bin-aligned in every frame: the peaks must be
+    // identical throughout, regardless of the per-frame phase offset.
+    for (std::size_t f = 0; f < spec.numFrames; ++f)
+        for (int c = 0; c < 3; ++c)
+            EXPECT_NEAR(spec.at(f, kToneBins[c]), kToneAmps[c] / 2.0, kPeakTol)
+                << "frame " << f << ", bin " << kToneBins[c];
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 5. Empty and short signals
 // ══════════════════════════════════════════════════════════════════════════════
 

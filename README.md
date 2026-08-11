@@ -181,6 +181,12 @@ $$X[k] = \sum_{n=0}^{N-1} x[n] \cdot e^{-i 2\pi k n / N},$$
 ### Time-frequency validation
 
 - **Synthetic signals with known frequencies** (`test_STFTAnalyzer`): a bin-aligned sinusoid produces its spectral peak at the expected frequency bin, and a DC signal concentrates its energy in bin 0, confirming that framing, windowing and the FFT are wired together correctly.
+- **Multi-tone analysis** (`test_STFTAnalyzer`): a signal built as the sum of three bin-aligned sinusoids with distinct amplitudes ($k = 8, 32, 96$ — i.e. $\approx 344$, $1378$ and $4134$ Hz at 44.1 kHz, with amplitudes $1.0$, $0.6$, $0.3$) is used to verify simultaneously that
+  - all three peaks appear at the expected bins as strict local maxima, with the remaining bins essentially silent;
+  - the recovered magnitude matches the expected amplitude. With the normalization applied by the analyzer — division by $\text{frameSize} \cdot \text{coherentGain} = \sum_n w[n]$ — a real sinusoid of amplitude $A$ yields a one-sided peak of $A/2$;
+  - the *relative* amplitudes between components are preserved, so windowing and normalization do not distort the spectral balance;
+  - the peaks are stable across every frame, as expected for a stationary signal;
+  - the peak bins map back to the correct physical frequencies via `binFrequency()`.
 
 ### Structural and parallel tests
 
