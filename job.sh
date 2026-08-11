@@ -4,13 +4,22 @@
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
 #SBATCH --time=00:30:00              ## Maximum job duration
 #SBATCH --nodes=1                    ## Single node (see MPI note below)
-#SBATCH --ntasks=4                   ## MPI ranks for the distributed benchmark
-#SBATCH --cpus-per-task=4            ## OpenMP threads per rank
-#SBATCH --mem=8G                     ## Requested memory
-## NOTE: no --account / --partition on purpose: SLURM then charges the job to the
-## user's default account and queue. Hardcoding an account that is not yours (or
-## whose budget expired) makes sbatch fail with "invalid account or expired
-## budget". Check your valid accounts with `saldo -b` on the login node.
+#SBATCH --ntasks=2                   ## MPI ranks for the distributed benchmark
+#SBATCH --cpus-per-task=2            ## OpenMP threads per rank (2 x 2 = 4 cores)
+#SBATCH --mem=4G                     ## Requested memory
+#SBATCH --partition=g100_all_serial  ## Default queue, usable without a budget
+
+## NOTE: no --account on purpose — SLURM then charges the job to the user's
+## default account. Hardcoding an account that is not yours (or whose budget
+## expired) makes sbatch fail with "invalid account or expired budget"; check
+## yours with `saldo -b` on the login node.
+##
+## The resources above are sized for g100_all_serial, whose QOS caps each user at
+## 4 cores and ~30 GB: asking for more fails at submission with
+## "QOSMaxCpuPerUserLimit". To scale up (more ranks/threads) you need a valid
+## budget and a production partition, e.g.
+##   #SBATCH --account=<your_account>
+##   #SBATCH --partition=g100_usr_prod
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
