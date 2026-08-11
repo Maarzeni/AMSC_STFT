@@ -7,8 +7,10 @@
 #SBATCH --ntasks=4                   ## MPI ranks for the distributed benchmark
 #SBATCH --cpus-per-task=4            ## OpenMP threads per rank
 #SBATCH --mem=8G                     ## Requested memory
-#SBATCH --partition=g100_usr_prod    ## Galileo100 production partition
-#SBATCH --account=tra26_TRNPLM       ## CINECA budget account (from `saldo -b`)
+## NOTE: no --account / --partition on purpose: SLURM then charges the job to the
+## user's default account and queue. Hardcoding an account that is not yours (or
+## whose budget expired) makes sbatch fail with "invalid account or expired
+## budget". Check your valid accounts with `saldo -b` on the login node.
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
