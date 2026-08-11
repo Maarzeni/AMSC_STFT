@@ -312,3 +312,4 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 ## TO DO
 - scrivere nel readme il tutorial di come inserire le chiavi di github
 - togliere warning dalla compilazione
+- sistemare cose a seguito del commento del prof "Per la parte MPI, distribuire i frame della STFT è una scelta ragionevole. Chiarirei però che, se il segnale viene prima distribuito a tutti i processi, la strategia è adatta a segnali di dimensione moderata, ma non è completamente scalabile in memoria per casi molto grandi.". Possiamo mostrare questo nel codice? possiamo aggiungere questa osservazione nel readme nella sezione "benchmark")

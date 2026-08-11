@@ -13,11 +13,16 @@
  * (MPI_Reduce with MPI_MAX), since that is what bounds the collective.
  * Only the root rank prints results.
  *
- * Usage (compare across rank counts to read strong scaling):
- *   mpirun -np 1 ./benchmark_MPI_Main
+ * Usage:
+ *   mpirun -np <P> ./benchmark_MPI_Main [reps] [warmup] [frame] [hop] [seconds]
+ *
  *   mpirun -np 2 ./benchmark_MPI_Main
- *   mpirun -np 4 ./benchmark_MPI_Main
- *   OMP_NUM_THREADS=4 mpirun -np 2 ./benchmark_MPI_Main   # hybrid
+ *   OMP_NUM_THREADS=4 mpirun -np 2 ./benchmark_MPI_Main            # hybrid
+ *   mpirun -np 2 ./benchmark_MPI_Main 7 2 8192 4096 20             # coarser frames
+ *
+ * `hop` may be given as 0, meaning frame/2.  The rank count cannot be varied
+ * from inside the program — it is fixed by mpirun at launch — so the strong
+ * scaling sweep lives in the companion script run_scaling.sh.
  *
  * Only std::chrono + STL + project code (+ MPI) are used.
  */
@@ -101,57 +106,107 @@ int main(int argc, char** argv) {
     if (argc >= 2) reps   = std::max(1, std::atoi(argv[1]));
     if (argc >= 3) warmup = std::max(0, std::atoi(argv[2]));
 
-    constexpr std::size_t   FRAME = 1024;
-    constexpr std::size_t   HOP   = 512;
-    constexpr std::uint32_t SR    = 44100;
+    // Optional geometry overrides.  The frame size is the knob that matters for
+    // parallel efficiency: the per-iteration overhead of the OpenMP loop is
+    // fixed, while the work of one iteration grows as O(N log N), so larger
+    // frames amortise it.  Pushing it too far leaves too few frames to spread
+    // across ranks and threads, so both ends of the range are worth probing.
+    std::size_t frame = 1024;
+    std::size_t hop   = 0;        // 0 → frame / 2
+    if (argc >= 4) frame = static_cast<std::size_t>(std::max(2, std::atoi(argv[3])));
+    if (argc >= 5) hop   = static_cast<std::size_t>(std::max(0, std::atoi(argv[4])));
+    if (hop == 0) hop = frame / 2;
 
-    const std::size_t signalLen = 10u * SR;   // ~10 s of audio
-    const std::size_t frames =
-        STFTAnalyzer<IterativeFFT, HannWindow>::numFrames(signalLen, FRAME, HOP);
+    // Workload sweep, expressed as seconds of audio.  A single measurement at
+    // one problem size says nothing about scaling: what matters is how the
+    // hybrid gain evolves as the number of frames grows, the same way the FFT
+    // table sweeps transform sizes.  Passing a duration on the command line
+    // collapses the sweep to that single point.
+    std::vector<double> durations = {1.0, 5.0, 10.0, 30.0};
+    if (argc >= 6) durations = { std::max(0.1, std::atof(argv[5])) };
 
-    // Root generates the signal; non-root pass an empty vector (the analyzer
-    // broadcasts internally).  Deterministic generator → reproducible.
-    std::vector<double> signal;
-    if (ctx.isRoot()) signal = bench::makeSignal(signalLen, SR);
+    constexpr std::uint32_t SR = 44100;
 
-    MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(ctx, FRAME, HOP, SR);
+    // Checked here rather than left to the analyzer's exception: every rank
+    // would throw at once, and an uncaught throw under MPI gives a far less
+    // readable failure than an explicit abort.
+    if ((frame & (frame - 1)) != 0) {
+        if (ctx.isRoot())
+            std::cerr << "Frame size must be a power of two (got " << frame << ").\n";
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    // Frame geometry is fixed across the sweep, so one analyzer serves every
+    // workload: only the signal handed to analyze() changes.
+    MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(ctx, frame, hop, SR);
+
+    // Captured on every rank before clamping: omp_set_num_threads() writes the
+    // same internal variable that omp_get_max_threads() reads back, so after
+    // setThreads(1) the real per-rank core count is no longer readable.
+    const int nThreads = maxThreads();
 
     if (ctx.isRoot()) {
         std::cout << "AMSC_STFT Benchmark Suite (MPI / hybrid)\n"
                   << "  ranks        : " << ctx.size() << "\n"
-                  << "  threads/rank : up to " << maxThreads() << "\n"
+                  << "  threads/rank : up to " << nThreads << "\n"
                   << "  repetitions  : " << reps << "  (warmup " << warmup << ")\n"
-                  << "  signal       : " << signalLen << " samples, "
-                  << frames << " frames\n";
+                  << "  frame / hop  : " << frame << " / " << hop << " samples\n"
+                  << "  workloads    : ";
+        for (std::size_t i = 0; i < durations.size(); ++i)
+            std::cout << durations[i]
+                      << (i + 1 < durations.size() ? ", " : " s of audio\n");
         bench::printSectionTitle(
             "Distributed STFT (MPI_STFTAnalyzer<IterativeFFT, HannWindow>)");
         bench::printTableHeader();
     }
 
-    auto runOnce = [&]{
-        const SpectrogramData out = analyzer.analyze(signal);
-        bench::doNotOptimize(out);
-    };
+    for (const double sec : durations) {
+        const std::size_t signalLen =
+            static_cast<std::size_t>(sec * static_cast<double>(SR));
+        const std::size_t frames =
+            STFTAnalyzer<IterativeFFT, HannWindow>::numFrames(signalLen, frame, hop);
 
-    // MPI pure: 1 thread per rank
-    setThreads(1);
-    const bench::Stats sMPI = measureMPI(ctx, warmup, reps, runOnce);
-    if (ctx.isRoot())
-        bench::printRow("MPI pure (1 thr/rank)", frames, sMPI);
+        // A signal shorter than one frame produces no frames at all: there is
+        // nothing to measure, and the row would report a meaningless 0.  Every
+        // rank evaluates the same condition, so the collective stays balanced.
+        if (frames == 0) continue;
 
-    // Hybrid: all threads per rank
-    setThreads(maxThreads());
-    const bench::Stats sHybrid = measureMPI(ctx, warmup, reps, runOnce);
-    if (ctx.isRoot())
-        bench::printRow("hybrid (" + std::to_string(maxThreads()) + " thr/rank)",
-                        frames, sHybrid, sMPI.mean);
+        // Root generates the signal; non-root pass an empty vector (the analyzer
+        // broadcasts internally).  Deterministic generator → reproducible.
+        std::vector<double> signal;
+        if (ctx.isRoot()) signal = bench::makeSignal(signalLen, SR);
+
+        auto runOnce = [&]{
+            const SpectrogramData out = analyzer.analyze(signal);
+            bench::doNotOptimize(out);
+        };
+
+        // MPI pure: 1 thread per rank
+        setThreads(1);
+        const bench::Stats sMPI = measureMPI(ctx, warmup, reps, runOnce);
+        if (ctx.isRoot())
+            bench::printRow("MPI pure (1 thr/rank)", frames, sMPI);
+
+        // Hybrid: all threads per rank
+        setThreads(nThreads);
+        const bench::Stats sHybrid = measureMPI(ctx, warmup, reps, runOnce);
+        if (ctx.isRoot()) {
+            bench::printRow("hybrid (" + std::to_string(nThreads) + " thr/rank)",
+                            frames, sHybrid, sMPI.mean);
+            std::cout << "\n";
+        }
+    }
 
     if (ctx.isRoot()) {
         std::cout << "\nNotes:\n"
                   << "  - time per rep = slowest rank (MPI_MAX).\n"
-                  << "  - speedup is hybrid vs MPI-pure at the SAME rank count.\n"
+                  << "  - speedup is hybrid vs MPI-pure at the SAME workload.\n"
+                  << "  - each block is one workload; the frame count grows down\n"
+                  << "    the table, so the hybrid gain should improve with it.\n"
                   << "  - vary -np across runs to read strong scaling;\n"
-                  << "    -np 1 is the serial/OpenMP-equivalent baseline.\n";
+                  << "    -np 1 is the serial/OpenMP-equivalent baseline.\n"
+                  << "  - args: [reps] [warmup] [frame] [hop] [seconds];\n"
+                  << "    giving [seconds] replaces the sweep with one workload.\n";
     }
 
     return 0;

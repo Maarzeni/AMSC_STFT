@@ -20,3 +20,16 @@ set_target_properties(benchmark_Main PROPERTIES COMPILE_FLAGS "-O3")
 add_executable(benchmark_MPI_Main benchmark_MPI_Main.cpp)
 target_link_libraries(benchmark_MPI_Main PRIVATE amsc_stft_mpi OpenMP::OpenMP_CXX)
 set_target_properties(benchmark_MPI_Main PROPERTIES COMPILE_FLAGS "-O3")
+
+# ---------------------------------------------------
+# Strong-scaling driver
+# ---------------------------------------------------
+# The rank count is fixed by mpirun at launch, so the sweep over -np cannot live
+# inside the benchmark: this script runs it once per configuration.  Copied next
+# to the binary so it can be invoked as ./benchmarks/run_scaling.sh from build/.
+file(COPY run_scaling.sh
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
+     FILE_PERMISSIONS
+         OWNER_READ OWNER_WRITE OWNER_EXECUTE
+         GROUP_READ GROUP_EXECUTE
+         WORLD_READ WORLD_EXECUTE)
