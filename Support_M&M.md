@@ -310,4 +310,4 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 
 
 ## TO DO
-- tradurre in inglese job.sh
+- scrivere nel readme il tutorial di come inserire le chiavi di github
