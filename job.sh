@@ -53,13 +53,38 @@ SIF="amsc_stft.sif"
 BUILD=/app/AMSC_STFT/ft_project/build
 BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 
+# Benchmark parameters: reps, warmup, frame, hop.  Kept IDENTICAL to the ones the
+# CI workflow uses on the GitHub runner, otherwise the two result tables measure
+# different workloads and cannot be compared.  No 5th argument, so both binaries
+# run their full duration sweep (1, 5, 10, 30 s of audio).
+BENCH_ARGS="7 2 1024 512"
+
+# Every result file is collected here; the CD workflow copies this folder back
+# and publishes it as a build artifact.
+RESULTS="${SLURM_SUBMIT_DIR}/results"
+mkdir -p "${RESULTS}"
+
+# Machine description, so a results file is interpretable months later without
+# having to remember which node it ran on.
+{
+    echo "environment  : CINECA Galileo100 (SLURM job ${SLURM_JOB_ID})"
+    echo "node         : ${SLURMD_NODENAME}"
+    echo "partition    : ${SLURM_JOB_PARTITION}"
+    echo "ranks x thr  : ${SLURM_NTASKS} x ${SLURM_CPUS_PER_TASK} = ${TOTAL_CORES} cores"
+    echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
+    echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+    lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|CPU MHz|L3 cache'
+} | tee "${RESULTS}/cluster_env.txt"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Unit tests (GoogleTest via ctest)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
 echo "==================== [1/4] Running unit tests (ctest) ===================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} ctest --output-on-failure
+singularity exec ${BIND} --pwd ${BUILD} ${SIF} ctest --output-on-failure \
+    2>&1 | tee "${RESULTS}/cluster_ctest.txt"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Serial / OpenMP benchmark (single process, all reserved cores)
@@ -67,7 +92,9 @@ singularity exec ${BIND} --pwd ${BUILD} ${SIF} ctest --output-on-failure
 echo ""
 echo "============== [2/4] Benchmark: serial / OpenMP (benchmark_Main) =========="
 export OMP_NUM_THREADS=${TOTAL_CORES}
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} ${BUILD}/benchmarks/benchmark_Main
+singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
+    ${BUILD}/benchmarks/benchmark_Main ${BENCH_ARGS} \
+    2>&1 | tee "${RESULTS}/cluster_benchmark_openmp.txt"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Distributed / hybrid benchmark (MPI ranks × OpenMP threads, single node)
@@ -77,7 +104,8 @@ echo "============ [3/4] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     mpirun --bind-to none -np ${SLURM_NTASKS} \
-    ${BUILD}/benchmarks/benchmark_MPI_Main
+    ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
+    2>&1 | tee "${RESULTS}/cluster_benchmark_mpi.txt"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Examples: WAV → spectrogram PNG (output written next to the host WAV)

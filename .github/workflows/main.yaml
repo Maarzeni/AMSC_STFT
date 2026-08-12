@@ -40,7 +40,54 @@ jobs:
           export OMP_NUM_THREADS=2
           ctest --output-on-failure
 
-      # Step 5: [Apptainer] Install Apptainer to build the container
+      # Step 5: [Benchmark] Run the suite on the runner.
+      # These numbers are a SMOKE TEST, not a measurement: GitHub runners are
+      # shared vCPUs with no exclusive access, so absolute timings are noisy and
+      # not comparable with the cluster ones. What they do catch is a benchmark
+      # that stopped building, crashed, or lost its parallel speedup entirely.
+      # Parameters are kept identical to job.sh so the two tables line up.
+      - name: Run benchmarks on GitHub runner
+        env:
+          BENCH_ARGS: "7 2 1024 512" # reps warmup frame hop — must match job.sh
+          RANKS: 2 # same rank x thread layout as the SLURM job
+          THREADS: 2
+        run: |
+          cd ft_project/build
+          RESULTS="${GITHUB_WORKSPACE}/results"
+          mkdir -p "${RESULTS}"
+
+          {
+            echo "environment  : GitHub Actions runner (${RUNNER_OS}, ${GITHUB_RUN_ID})"
+            echo "node         : $(hostname)"
+            echo "partition    : n/a (shared vCPU, NOT a dedicated node)"
+            echo "ranks x thr  : ${RANKS} x ${THREADS} = $((RANKS * THREADS)) cores (nproc reports $(nproc))"
+            echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
+            echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            lscpu | grep -E 'Model name|^CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|CPU MHz|L3 cache'
+          } | tee "${RESULTS}/github_env.txt"
+
+          # Serial / OpenMP: all cores, matching the cluster's TOTAL_CORES
+          OMP_NUM_THREADS=$((RANKS * THREADS)) \
+            ./benchmarks/benchmark_Main ${BENCH_ARGS} \
+            2>&1 | tee "${RESULTS}/github_benchmark_openmp.txt"
+
+          # MPI / hybrid: oversubscribe, since the runner may have fewer cores
+          export OMPI_MCA_rmaps_base_oversubscribe=1
+          OMP_NUM_THREADS=${THREADS} \
+            mpirun --oversubscribe -np ${RANKS} \
+            ./benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
+            2>&1 | tee "${RESULTS}/github_benchmark_mpi.txt"
+
+      # Step 6: [Artifact] Publish the runner-side benchmark output
+      - name: Upload GitHub benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-github
+          path: results/
+          retention-days: 30
+
+      # Step 7: [Apptainer] Install Apptainer to build the container
       - name: Install Apptainer
         run: |
           sudo apt-get update -qq
@@ -49,11 +96,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y apptainer
 
-      # Step 6: [Container] Build Singularity container image
+      # Step 8: [Container] Build Singularity container image
       - name: Build Singularity container image
         run: sudo apptainer build --force amsc_stft.sif Singularity.def
 
-      # Step 7: [Artifact] Save the built container to be downloaded later
+      # Step 9: [Artifact] Save the built container to be downloaded later
       - name: Upload container artifact
         uses: actions/upload-artifact@v4
         with:
@@ -101,19 +148,58 @@ jobs:
         run: |
           REMOTE="${REMOTE_USER}@login.g100.cineca.it"
 
-          # Creates the required folder structure on the cluster
+          # Creates the required folder structure on the cluster. `results` is
+          # wiped first: it is fetched back after the run, and leftovers from a
+          # previous job would be published as if they belonged to this one.
           ssh $SSH_OPTS ${REMOTE} \
-            "mkdir -p ${REMOTE_PATH}/input ${REMOTE_PATH}/results"
+            "mkdir -p ${REMOTE_PATH}/input && rm -rf ${REMOTE_PATH}/results && mkdir -p ${REMOTE_PATH}/results"
 
           # Copies the container, SLURM script, and input data
           scp $SSH_OPTS amsc_stft.sif  ${REMOTE}:${REMOTE_PATH}/
           scp $SSH_OPTS job.sh             ${REMOTE}:${REMOTE_PATH}/
 
-      # Submits the SLURM job from the login node
-      - name: Submit SLURM job via sbatch
+      # Submits the SLURM job and blocks until it finishes.
+      # --wait is what makes the results retrievable: without it sbatch returns
+      # as soon as the job is queued, the workflow ends, and there is nothing to
+      # download. The ServerAlive options keep the SSH connection from being
+      # dropped while the job sits in the queue.
+      - name: Submit SLURM job via sbatch and wait for completion
+        timeout-minutes: 60
         env:
-          SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
+          SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=30"
         run: |
           ssh $SSH_OPTS \
             ${{ secrets.HPC_USERNAME }}@login.g100.cineca.it \
-            "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch job.sh"
+            "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch --wait job.sh"
+
+      # Brings the benchmark output back from the cluster.
+      # `always()` so that a failed or timed-out job still yields its logs —
+      # that is exactly when they are most worth reading.
+      - name: Fetch results from Galileo100
+        if: always()
+        env:
+          REMOTE_USER: ${{ secrets.HPC_USERNAME }}
+          REMOTE_PATH: ${{ secrets.HPC_SCRATCH_PATH }}
+          SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
+        run: |
+          REMOTE="${REMOTE_USER}@login.g100.cineca.it"
+          mkdir -p results
+
+          # Per-step logs written by job.sh
+          scp -r $SSH_OPTS ${REMOTE}:${REMOTE_PATH}/results/. results/ || \
+            echo "WARNING: no results/ directory on the cluster"
+
+          # SLURM's own stdout/stderr capture, useful when the job died early
+          scp $SSH_OPTS ${REMOTE}:${REMOTE_PATH}/amsc_stft_job.out results/ || true
+          scp $SSH_OPTS ${REMOTE}:${REMOTE_PATH}/amsc_stft_job.err results/ || true
+
+          echo "Fetched:"
+          ls -la results/
+
+      - name: Upload cluster benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-cluster
+          path: results/
+          retention-days: 30
