@@ -69,7 +69,7 @@ BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 # The .sif is a read-only squashfs, and on the login nodes /scratch_local (the
 # default TMPDIR) is read-only too. Two things need to write somewhere:
 #   * ctest       → build/Testing/Temporary/LastTest.log, INSIDE the image;
-#                   --writable-tmpfs gives it a throwaway in-memory overlay.
+#                   handled in section 1 by mirroring the CTest metadata out.
 #   * OpenMPI     → its ORTE session directory under TMPDIR; without a writable
 #                   one, orte_init fails and mpirun never starts the ranks.
 # The submission directory is bind-mounted and writable, so TMPDIR points there.
@@ -118,7 +118,7 @@ mkdir -p "${RESULTS}"
 # 1. Unit tests (GoogleTest via ctest)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "==================== [1/4] Running unit tests (ctest) ===================="
+echo "==================== [1/5] Running unit tests (ctest) ===================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
 
 # --writable-tmpfs is not enough here (it is refused on this stack), so instead
@@ -140,7 +140,7 @@ singularity exec ${BIND} --pwd ${CTESTDIR} ${SIF} \
 # 2. Serial / OpenMP benchmark (single process, all reserved cores)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "============== [2/4] Benchmark: serial / OpenMP (benchmark_Main) =========="
+echo "============== [2/5] Benchmark: serial / OpenMP (benchmark_Main) =========="
 export OMP_NUM_THREADS=${TOTAL_CORES}
 singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     ${BUILD}/benchmarks/benchmark_Main ${BENCH_ARGS} \
@@ -150,7 +150,7 @@ singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
 # 3. Distributed / hybrid benchmark (MPI ranks × OpenMP threads, single node)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "============ [3/4] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========="
+echo "============ [3/5] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========="
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     mpirun --bind-to none -np ${SLURM_NTASKS} \
@@ -159,10 +159,44 @@ singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     2>&1 | tee "${RESULTS}/cluster_benchmark_mpi.txt"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. Examples: WAV → spectrogram PNG (output written next to the host WAV)
+# 4. Memory: broadcast vs scatter, measured (paired runs)
+# ══════════════════════════════════════════════════════════════════════════════
+# The analytic footprint table printed above is computed, not observed. The
+# measured counterpart is VmHWM, a high-water mark of the WHOLE process: a
+# process that ran both strategies would carry the broadcast's peak into the
+# scatter's reading and report them as equal. So the two strategies need two
+# separate launches, which is what this section does.
+#
+# Passing a strategy means passing [seconds] too (strategy is the 6th argument),
+# and that collapses the duration sweep to one workload. 30 s is the largest the
+# sweep uses, hence where the strategies differ most: 10.09 MiB of signal per
+# rank under broadcast against 5.05 MiB under scatter.
+echo ""
+echo "======== [4/5] Memory: broadcast vs scatter (peak RSS, paired runs) ======="
+MEMFILE="${RESULTS}/cluster_memory_bcast_vs_scatter.txt"
+: > "${MEMFILE}"
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+
+for STRATEGY in bcast scatter; do
+    {
+        echo ""
+        echo "════════════════ distribution: ${STRATEGY} ════════════════"
+    } | tee -a "${MEMFILE}"
+
+    # ${BENCH_ARGS} 30 <strategy> keeps reps/warmup/frame/hop identical to the
+    # sweep above, so only the distribution differs between the two runs.
+    singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
+        mpirun --bind-to none -np ${SLURM_NTASKS} \
+        ${MCA_OPTS} \
+        ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} 30 ${STRATEGY} \
+        2>&1 | tee -a "${MEMFILE}"
+done
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Examples: WAV → spectrogram PNG (output written next to the host WAV)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-echo "==================== [4/4] Examples (STFT spectrograms) =================="
+echo "==================== [5/5] Examples (STFT spectrograms) =================="
 WAV="${SLURM_SUBMIT_DIR}/ft_project/tests/data/examples_test-audio.wav"
 if [ -f "${WAV}" ]; then
     # Serial/OpenMP example: <stem>_spectrogram.png next to the input WAV
