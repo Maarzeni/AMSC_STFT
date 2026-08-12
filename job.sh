@@ -53,6 +53,23 @@ SIF="amsc_stft.sif"
 BUILD=/app/AMSC_STFT/ft_project/build
 BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 
+# ── Writable scratch ──────────────────────────────────────────────────────────
+# The .sif is a read-only squashfs, and on the login nodes /scratch_local (the
+# default TMPDIR) is read-only too. Two things need to write somewhere:
+#   * ctest       → build/Testing/Temporary/LastTest.log, INSIDE the image;
+#                   --writable-tmpfs gives it a throwaway in-memory overlay.
+#   * OpenMPI     → its ORTE session directory under TMPDIR; without a writable
+#                   one, orte_init fails and mpirun never starts the ranks.
+# The submission directory is bind-mounted and writable, so TMPDIR points there.
+TMPWORK="${SLURM_SUBMIT_DIR}/tmp"
+mkdir -p "${TMPWORK}"
+export SINGULARITYENV_TMPDIR="${TMPWORK}"   # TMPDIR as seen INSIDE the container
+export APPTAINERENV_TMPDIR="${TMPWORK}"     # same, for the apptainer-named stack
+
+# The login node exports DISPLAY without a reachable X server, which makes every
+# container invocation print "No protocol specified". Harmless, just noise.
+unset DISPLAY
+
 # Benchmark parameters: reps, warmup, frame, hop.  Kept IDENTICAL to the ones the
 # CI workflow uses on the GitHub runner, otherwise the two result tables measure
 # different workloads and cannot be compared.  No 5th argument, so both binaries
@@ -83,7 +100,8 @@ mkdir -p "${RESULTS}"
 echo ""
 echo "==================== [1/4] Running unit tests (ctest) ===================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} ctest --output-on-failure \
+singularity exec --writable-tmpfs ${BIND} --pwd ${BUILD} ${SIF} \
+    ctest --output-on-failure \
     2>&1 | tee "${RESULTS}/cluster_ctest.txt"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -104,6 +122,7 @@ echo "============ [3/4] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     mpirun --bind-to none -np ${SLURM_NTASKS} \
+    --mca orte_tmpdir_base "${TMPWORK}" \
     ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
     2>&1 | tee "${RESULTS}/cluster_benchmark_mpi.txt"
 
@@ -122,6 +141,7 @@ if [ -f "${WAV}" ]; then
     export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
     singularity exec ${BIND} ${SIF} \
         mpirun --bind-to none -np ${SLURM_NTASKS} \
+        --mca orte_tmpdir_base "${TMPWORK}" \
         ${BUILD}/examples/mpi_main "${WAV}"
 else
     echo "WARNING: ${WAV} not found — skipping examples."
