@@ -76,13 +76,22 @@ add_test(NAME STFTAnalyzerTest COMMAND test_STFTAnalyzer)
 add_executable(test_MPI_STFTAnalyzer test_MPI_STFTAnalyzer.cpp)
 target_link_libraries(test_MPI_STFTAnalyzer PRIVATE amsc_stft_mpi GTest::gtest_main)
 
+# Registered at several rank counts rather than only at 2: the frame block
+# distribution behaves differently when the frame count does not divide evenly
+# (3 ranks leaves a remainder for every signal used in the test), when there is
+# a single rank (the distribution degenerates to the serial case), and when
+# there are more ranks than frames (some ranks stay idle through the
+# collectives).  Running more ranks than cores needs oversubscription, which CI
+# and job.sh enable through OMPI_MCA_rmaps_base_oversubscribe.
 if(MPIEXEC_EXECUTABLE)
-    add_test(
-        NAME MPISTFTTest
-        COMMAND ${MPIEXEC_EXECUTABLE}
-                ${MPIEXEC_NUMPROC_FLAG} 2
-                ${MPIEXEC_PREFLAGS}
-                $<TARGET_FILE:test_MPI_STFTAnalyzer>
-                ${MPIEXEC_POSTFLAGS}
-    )
+    foreach(np 1 2 3 4)
+        add_test(
+            NAME MPISTFTTest_np${np}
+            COMMAND ${MPIEXEC_EXECUTABLE}
+                    ${MPIEXEC_NUMPROC_FLAG} ${np}
+                    ${MPIEXEC_PREFLAGS}
+                    $<TARGET_FILE:test_MPI_STFTAnalyzer>
+                    ${MPIEXEC_POSTFLAGS}
+        )
+    endforeach()
 endif()

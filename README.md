@@ -259,6 +259,44 @@ OMP_NUM_THREADS=4 mpirun -np 8 ./mpi_main
 
 ---
 
+### Distributing the signal: broadcast versus scatter
+
+The first version of `MPI_STFTAnalyzer` distributed the work but not the data. The root rank broadcast two scalars, the signal length and the sample rate, so that every rank could derive the frame layout on its own; it then broadcast the entire sample array with a single `MPI_Bcast`; each rank computed the frames of its assigned block, and `MPI_Gatherv` reassembled the magnitude matrix on the root. The design is simple for a good reason. STFT frames are independent, so the only thing a rank needs in order to compute frame *f* is the samples that frame reads, and handing every rank the whole signal makes the question of which samples those are disappear entirely: there are no block boundaries to get right, there is one collective to reason about, and every rank can address any frame by its global index.
+
+What that design does not do is scale in memory. Every rank ends up holding all *N* samples regardless of how many ranks take part, so the per-rank input footprint is independent of *P*. One hour of mono audio at 44.1 kHz is roughly 159 million samples, which is about 1.27 GB once stored as `double`, and that figure is exactly the same on four ranks as on four hundred. Adding nodes therefore buys time to solution but never capacity: the longest signal the program can analyse remains the longest that fits in the memory of a single node. The strategy is appropriate for signals of moderate size, and it is the large ones it cannot follow.
+
+The default strategy now replaces the broadcast with an `MPI_Scatterv` that sends each rank only the samples its own frames actually read. Rank *r* owns frames `[start_r, start_r + count_r)`, which span
+
+```
+offset_r = start_r * hopSize
+length_r = (count_r - 1) * hopSize + frameSize
+```
+
+so a rank receives approximately `N/P` samples plus a halo of `frameSize - hopSize`: the tail of its block that the following block also needs in order to complete its own first frame. Consecutive send blocks consequently overlap, which `MPI_Scatterv` permits because it only ever reads the send buffer; the same overlap among the displacements of `MPI_Gatherv` would instead be a write race. The halo is a constant fixed by the frame geometry alone, so it does not grow with either the signal or the rank count: at the default 1024/512 geometry it is 512 samples, four kilobytes, set against blocks of tens of megabytes.
+
+`STFTAnalyzer` required no modification to operate on a slice. `analyzeRange` is called with `startFrame = 0`, and the offset it computes internally, `frameIdx * hopSize`, is then already relative to the beginning of the slice, which is `offset_r` in global coordinates. Ranks that receive no frames at all — a signal shorter than one frame, or simply fewer frames than ranks — are given a send count of zero and still participate in the collective, so no configuration deadlocks. The root rank is the one exception to the slice-relative scheme: it passes `MPI_IN_PLACE` and keeps addressing its frames inside the full signal it already holds, because receiving its own block into a second buffer would add another `N/P` to the peak of the rank that is already the largest. Both strategies remain selectable through the `Distribution` parameter of the constructor, which defaults to `Distribution::Scatter`, so the comparison below can be reproduced rather than merely reported.
+
+The table was produced with `benchmark_MPI_Main` on ten minutes of synthetic audio (26 460 000 samples) at frame 1024 and hop 512. The sample counts are analytic and exact; the resident sizes are the `VmHWM` high-water marks read from `/proc/self/status`, reduced across ranks. Because that mark covers the whole lifetime of a process, each row comes from its own run:
+
+```bash
+mpirun -np 4 ./benchmarks/benchmark_MPI_Main 1 0 1024 512 600 bcast
+mpirun -np 4 ./benchmarks/benchmark_MPI_Main 1 0 1024 512 600 scatter
+```
+
+| Ranks | Strategy | Input samples per rank | Input MiB | Peak RSS MIN (MiB) | Peak RSS MAX (MiB) | Peak RSS AVG (MiB) |
+|---|---|---|---|---|---|---|
+| 2 | broadcast | 26 460 000 | 201.9 | 327.2 | 731.6 | 529.4 |
+| 2 | scatter | 13 230 080 | 100.9 | 226.3 | 731.6 | 479.0 |
+| 4 | broadcast | 26 460 000 | 201.9 | 276.3 | 680.6 | 377.4 |
+| 4 | scatter | 6 615 296 | 50.5 | 124.6 | 680.6 | 263.8 |
+
+The sample column is the average over the ranks, which is exact for the broadcast and for the two-rank scatter; at four ranks the blocks differ by a single hop, between 6 615 040 and 6 615 552 samples, because 51 678 frames do not divide evenly.
+
+The input footprint now falls as `N/P`, and the measured peaks follow it: at four ranks the lightest rank drops from 276 MiB to 125 MiB, a saving of 151 MiB that matches the 151.4 MiB the analytic column predicts. The maximum does not move, and it is worth being explicit about why. The root rank reads the signal, so it holds *N* samples under either strategy, and it is also the rank that assembles the output; the scatter changes what the other *P − 1* ranks must hold, not what the reader holds. These numbers were measured in the Ubuntu 22.04 development container on a laptop, where the absolute values include the container's own baseline; the differences between the rows, which is what the table is about, are unaffected. Re-running the two commands above on Galileo100 reproduces the comparison at cluster scale.
+
+The gather side is deliberately unchanged, and that is where the remaining ceiling lies. The root rank still allocates the complete `totalFrames × numBins` magnitude matrix. At the default geometry that matrix stores `numBins / hopSize`, or 513/512, doubles for every input sample, which makes it very slightly *larger* than the signal it was computed from: the same hour of audio that occupies 1.27 GB as input yields about 1.27 GB of magnitudes on the root, on top of the signal the root read and the copy `analyze()` takes by value. The bottleneck has therefore moved from the input to the output rather than disappeared, and for a long enough recording it is the output that decides whether the run fits in memory. Removing it would mean not assembling the matrix at all — each rank writing its own range of frames directly through MPI-IO, or streaming block by block into the image exporter — which is beyond the scope of this change. A related limit sits in the same place: `MPI_Scatterv` and `MPI_Gatherv` express their counts and displacements as `int`, so both sides overflow above 2³¹ elements, around 13.5 hours of 44.1 kHz audio at this geometry. That limit is documented in the code rather than worked around.
+
+
 ## Continuous Integration and Deployment
 
 The repository includes a GitHub Actions workflow defined in `.github/workflows/main.yaml` that implements a full CI/CD pipeline triggered on every push and pull request.
