@@ -9,17 +9,29 @@
 #SBATCH --mem=4G                     ## Requested memory
 #SBATCH --partition=g100_all_serial  ## Default queue, usable without a budget
 
-## NOTE: no --account on purpose — SLURM then charges the job to the user's
-## default account. Hardcoding an account that is not yours (or whose budget
-## expired) makes sbatch fail with "invalid account or expired budget"; check
-## yours with `saldo -b` on the login node.
+## ── Why the serial partition, and how to leave it ────────────────────────────
+## g100_all_serial runs on the shared LOGIN nodes and needs no budget, which is
+## why it works right now. Its QOS caps each user at 4 cores and ~30 GB, so the
+## 2x2 layout above is the largest that will be accepted: asking for more fails
+## at submission with "QOSMaxCpuPerUserLimit".
 ##
-## The resources above are sized for g100_all_serial, whose QOS caps each user at
-## 4 cores and ~30 GB: asking for more fails at submission with
-## "QOSMaxCpuPerUserLimit". To scale up (more ranks/threads) you need a valid
-## budget and a production partition, e.g.
-##   #SBATCH --account=<your_account>
+## Consequences worth knowing when reporting these numbers:
+##   * timings come from a node shared with every interactive user;
+##   * the scaling study is confined to 1..4 workers.
+##
+## Moving to dedicated compute nodes needs an account with an OPEN budget window.
+## As of 2026-08-12 `saldo -b` reports tra26_TRNPLM ending 2026-07-31 with 3728
+## of 6000 core-hours unspent: the budget is not exhausted, the project window
+## simply closed, which is what makes sbatch answer "expired budget". Once the
+## course PI has it extended (or a new account is granted), swap the three
+## resource lines above for the block below and nothing else needs to change —
+## TOTAL_CORES and `mpirun -np` both derive from these values.
+##
+##   #SBATCH --ntasks=8
+##   #SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
+##   #SBATCH --mem=32G
 ##   #SBATCH --partition=g100_usr_prod
+##   #SBATCH --account=tra26_TRNPLM     ## re-check the name with `saldo -b`
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
