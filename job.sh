@@ -66,9 +66,17 @@ mkdir -p "${TMPWORK}"
 export SINGULARITYENV_TMPDIR="${TMPWORK}"   # TMPDIR as seen INSIDE the container
 export APPTAINERENV_TMPDIR="${TMPWORK}"     # same, for the apptainer-named stack
 
-# The login node exports DISPLAY without a reachable X server, which makes every
-# container invocation print "No protocol specified". Harmless, just noise.
-unset DISPLAY
+# The login node exports DISPLAY/XAUTHORITY without a reachable X server, which
+# makes container invocations print "No protocol specified". Purely cosmetic.
+unset DISPLAY XAUTHORITY
+
+# OpenMPI's shared-memory BTL (vader, OpenMPI 4.x on Ubuntu 22.04) tries to move
+# large messages with Cross Memory Attach, i.e. process_vm_readv(). That syscall
+# needs ptrace privileges the container does not have, so every scatter of the
+# signal fails with "Read -1, expected <n>, errno = 1" (EPERM) before OpenMPI
+# retries through a slower copy-in/copy-out path. The data still arrives, but
+# the timings absorb the failed attempt. Disabling single-copy skips it.
+MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
 
 # Benchmark parameters: reps, warmup, frame, hop.  Kept IDENTICAL to the ones the
 # CI workflow uses on the GitHub runner, otherwise the two result tables measure
@@ -100,7 +108,19 @@ mkdir -p "${RESULTS}"
 echo ""
 echo "==================== [1/4] Running unit tests (ctest) ===================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
-singularity exec --writable-tmpfs ${BIND} --pwd ${BUILD} ${SIF} \
+
+# --writable-tmpfs is not enough here (it is refused on this stack), so instead
+# ctest is run from a writable MIRROR of the build tree. Only the generated
+# CTestTestfile.cmake files are copied: each one registers its tests by ABSOLUTE
+# path into the image, so the very same read-only binaries are executed, while
+# Testing/Temporary/LastTest.log now lands on writable storage.
+CTESTDIR="${SLURM_SUBMIT_DIR}/ctest-run"
+rm -rf "${CTESTDIR}"
+mkdir -p "${CTESTDIR}"
+singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
+    sh -c "find . -name CTestTestfile.cmake -exec cp --parents -t ${CTESTDIR} {} +"
+
+singularity exec ${BIND} --pwd ${CTESTDIR} ${SIF} \
     ctest --output-on-failure \
     2>&1 | tee "${RESULTS}/cluster_ctest.txt"
 
@@ -122,7 +142,7 @@ echo "============ [3/4] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
     mpirun --bind-to none -np ${SLURM_NTASKS} \
-    --mca orte_tmpdir_base "${TMPWORK}" \
+    ${MCA_OPTS} \
     ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
     2>&1 | tee "${RESULTS}/cluster_benchmark_mpi.txt"
 
@@ -141,7 +161,7 @@ if [ -f "${WAV}" ]; then
     export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
     singularity exec ${BIND} ${SIF} \
         mpirun --bind-to none -np ${SLURM_NTASKS} \
-        --mca orte_tmpdir_base "${TMPWORK}" \
+        ${MCA_OPTS} \
         ${BUILD}/examples/mpi_main "${WAV}"
 else
     echo "WARNING: ${WAV} not found — skipping examples."

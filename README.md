@@ -292,55 +292,37 @@ singularity exec --pwd /app/AMSC_STFT/ft_project/build amsc_stft.sif ctest --out
 
 Because the binary is compiled inside the immutable container during the CI stage, no build step is required on the cluster: the job runs the pre-built test suite directly.
 
-### GitHub Actions Secrets Configuration
+### Setting Up SSH Authentication for Galileo100
 
-To enable automatic deployment and execution on Galileo100, the credentials used by the `cd` job must be stored as repository secrets:
+```bash
+# 1. Generate the certificate (choose a temporary passphrase, then log in on the
+#    browser page that opens: CINECA username + password + Google Authenticator OTP).
+#    Produces ~/.ssh/cineca_key and ~/.ssh/cineca_key-cert.pub
+step ssh certificate 'your_email@mail.polimi.it' ~/.ssh/cineca_key --provisioner cineca-hpc
 
-| Secret name | Description |
+# 2. Remove the passphrase (old = the temporary one, new = empty: press Enter twice)
+ssh-keygen -p -f ~/.ssh/cineca_key
+
+# 3. Test the connection (must not ask for a password)
+ssh your_username@login.g100.cineca.it \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o BatchMode=yes \
+  -i ~/.ssh/cineca_key
+
+# 4. Print the values to paste into the GitHub secrets
+cat ~/.ssh/cineca_key
+cat ~/.ssh/cineca_key-cert.pub
+```
+
+Then, under **Settings → Secrets and variables → Actions**, create:
+
+| Secret | Value |
 |---|---|
-| `HPC_USERNAME` | CINECA username used to log into Galileo100 |
-| `HPC_SSH_PRIVATE_KEY` | Private SSH key, written by the workflow to `~/.ssh/cineca_key` |
-| `HPC_CERT` | SSH certificate matching that key, written to `~/.ssh/cineca_key-cert.pub` |
-| `HPC_SCRATCH_PATH` | Remote working directory where the container, the job script and the results are placed (for example `/g100/home/userexternal/<username>/prova`) |
-
-The login node hostname and the SSH port are not parameterised: `login.g100.cineca.it` is written directly in `main.yaml`, and the default port 22 is used, so no `HPC_HOST` or `HPC_PORT` secret is needed.
-
-#### Obtaining the key and the certificate
-
-Access to Galileo100 is granted through CINECA's two-factor infrastructure, which issues a **short-lived SSH certificate** together with the key: a self-generated key pair uploaded to a user portal is not sufficient. The credentials are produced locally with the `step` client (refer to the CINECA 2FA documentation for the exact provisioner name in use):
-
-```bash
-# Generates ~/.ssh/cineca_key, ~/.ssh/cineca_key.pub and ~/.ssh/cineca_key-cert.pub
-step ssh certificate '<name.surname@example.com>' ~/.ssh/cineca_key --provisioner cineca-hpc
-
-# Inspects the certificate, in particular its validity interval
-ssh-keygen -L -f ~/.ssh/cineca_key-cert.pub
-```
-
-Because the certificate expires, the `cd` job starts failing with an authentication error once it is no longer valid: a newly issued certificate must then be uploaded as the new value of `HPC_CERT`.
-
-#### Adding the secrets to GitHub
-
-From the web interface, go to **Settings → Secrets and variables → Actions**, click **New repository secret**, and add each entry by name and value. The private key and the certificate must be pasted in full, including the delimiter lines:
-
-```
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXkt...
------END OPENSSH PRIVATE KEY-----
-```
-
-The file contents can be printed with `cat ~/.ssh/cineca_key` and `cat ~/.ssh/cineca_key-cert.pub`, or copied directly to the clipboard with `pbcopy < ~/.ssh/cineca_key` on macOS.
-
-Alternatively, the secrets can be uploaded from the terminal with the GitHub CLI, which avoids any copy-paste mistake on the multi-line values:
-
-```bash
-gh secret set HPC_SSH_PRIVATE_KEY < ~/.ssh/cineca_key
-gh secret set HPC_CERT            < ~/.ssh/cineca_key-cert.pub
-gh secret set HPC_USERNAME        --body "<username>"
-gh secret set HPC_SCRATCH_PATH    --body "/g100/home/userexternal/<username>/prova"
-```
-
-Finally, note that the SSH options include `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`, which disables host key verification. This keeps the non-interactive job from blocking on an unknown-host prompt, at the cost of losing detection of a changed remote host. A stricter alternative is to store the expected host key as an additional secret and populate `known_hosts` with `ssh-keyscan` during the setup step.
+| `HPC_SSH_PRIVATE_KEY` | content of `~/.ssh/cineca_key` |
+| `HPC_CERT` | content of `~/.ssh/cineca_key-cert.pub` |
+| `HPC_USERNAME` | CINECA username (e.g. `mcolombo`) |
+| `HPC_SCRATCH_PATH` | scratch directory (e.g. `/gpfs/scratch/userspace/your_username`) |
 
 ---
 
