@@ -28,7 +28,15 @@
 #   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
 #   MEM_DURATION seconds of audio for the memory comparison.  default 30
 #
+#   SCALING        set to 0 to skip the strong-scaling sweep.  default on
+#   MAX_WORKERS    largest rank count in the sweep. default: the SLURM
+#                  allocation, or the machine's physical cores
+#   SCALING_RANKS  explicit rank list, e.g. "1 2 4 8", overriding MAX_WORKERS
+#   SCALING_DURATION seconds of audio held fixed across the sweep. default 30
+#
 #   e.g.  RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
+#         SCALING_RANKS="1 2 4 8 16" bash scripts/run_suite.sh
+#         SCALING=0 bash scripts/run_suite.sh          # benchmarks only
 # =============================================================================
 
 # No `set -e`: a failing benchmark must not prevent the remaining sections from
@@ -184,7 +192,7 @@ unset DISPLAY XAUTHORITY
 # generated CTestTestfile.cmake files elsewhere sidesteps that: each one
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
-echo "==================== [1/4] Unit tests (ctest) ============================"
+echo "==================== [1/5] Unit tests (ctest) ============================"
 CTEST_MIRROR="${RESULTS_DIR}/../ctest-run"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
@@ -197,7 +205,7 @@ note_status "${PIPESTATUS[0]}" "unit-tests"
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
-echo "============== [2/4] Benchmark: serial / OpenMP =========================="
+echo "============== [2/5] Benchmark: serial / OpenMP =========================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
 "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS} \
     2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.txt"
@@ -205,7 +213,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-openmp"
 
 # ── Section 3: distributed / hybrid benchmark ───────────────────────────────
 echo ""
-echo "============ [3/4] Benchmark: MPI / hybrid ==============================="
+echo "============ [3/5] Benchmark: MPI / hybrid ==============================="
 export OMP_NUM_THREADS=${THREADS}
 mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
     "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS} \
@@ -217,7 +225,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 # report one strategy: running both in sequence would attribute the broadcast's
 # peak to the scatter too. Hence two launches, identical but for the strategy.
 echo ""
-echo "======== [4/4] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+echo "======== [4/5] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
 MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
 : > "${MEMFILE}"
 export OMP_NUM_THREADS=${THREADS}
@@ -236,6 +244,66 @@ for STRATEGY in bcast scatter; do
         2>&1 | tee -a "${MEMFILE}"
     note_status "${PIPESTATUS[0]}" "memory-${STRATEGY}"
 done
+
+# ── Section 5: strong scaling ───────────────────────────────────────────────
+# Sections 2-4 deliberately pin the same RANKS x THREADS everywhere, so tables
+# from different machines can be compared row by row. That is the wrong shape
+# for a scaling study, which needs the opposite: one machine, a fixed problem,
+# an increasing number of workers.
+#
+# The sweep therefore sizes itself to the machine — the SLURM allocation when
+# there is one, the physical core count otherwise — and walks the powers of two
+# up to it, adding the exact core count when that is not itself a power of two
+# (a 6-core machine gets 1 2 4 6). One thread per rank throughout, so the only
+# variable is the number of ranks.
+#
+# Reading it: speedup(P) = time(-np 1) / time(-np P). Every run also prints its
+# own "serial (1 rank, 1 thr)" row, which should stay roughly constant across
+# the sweep — if it drifts, the machine was busy and the run is suspect.
+if [ "${SCALING:-1}" != "0" ]; then
+    MAX_WORKERS=${MAX_WORKERS:-}
+    if [ -z "${MAX_WORKERS}" ]; then
+        if [ -n "${SLURM_JOB_ID:-}" ]; then
+            MAX_WORKERS=${TOTAL_CORES}          # what SLURM actually reserved
+        else
+            MAX_WORKERS=${PHYSICAL_CORES}       # what OpenMPI counts as slots
+        fi
+    fi
+
+    if [ -z "${SCALING_RANKS:-}" ]; then
+        SCALING_RANKS=""
+        p=1
+        while [ "${p}" -le "${MAX_WORKERS}" ]; do
+            SCALING_RANKS="${SCALING_RANKS} ${p}"
+            p=$(( p * 2 ))
+        done
+        case " ${SCALING_RANKS} " in
+            *" ${MAX_WORKERS} "*) ;;
+            *) SCALING_RANKS="${SCALING_RANKS} ${MAX_WORKERS}" ;;
+        esac
+    fi
+
+    echo ""
+    echo "======== [5/5] Strong scaling: ranks =${SCALING_RANKS} ==================="
+    SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.txt"
+    : > "${SCALEFILE}"
+    export OMP_NUM_THREADS=1
+
+    for P in ${SCALING_RANKS}; do
+        {
+            echo ""
+            echo "════════════════ -np ${P} (1 thread/rank) ════════════════"
+        } | tee -a "${SCALEFILE}"
+
+        # Fixed problem size across the sweep — that is what makes it STRONG
+        # scaling — and the same repetitions and geometry as every other section.
+        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+            ${BENCH_ARGS} "${SCALING_DURATION:-${MEM_DURATION}}" scatter \
+            2>&1 | tee -a "${SCALEFILE}"
+        note_status "${PIPESTATUS[0]}" "scaling-np${P}"
+    done
+fi
 
 echo ""
 echo "=========================================================================="
