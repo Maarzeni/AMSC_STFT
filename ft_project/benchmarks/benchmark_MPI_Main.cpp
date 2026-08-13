@@ -391,7 +391,7 @@ int main(int argc, char** argv) {
                   << "  - time per rep = slowest rank (MPI_MAX).\n"
                   << "  - speedup is hybrid vs MPI-pure at the SAME workload.\n"
                   << "  - each block is one workload; the frame count grows down\n"
-                  << "    the table, so the hybrid gain should improve with it.\n"
+                  << "    the table, so the hybrid gain can be read against it.\n"
                   << "  - vary -np across runs to read strong scaling;\n"
                   << "    -np 1 is the serial/OpenMP-equivalent baseline.\n"
                   << "  - args: [reps] [warmup] [frame] [hop] [seconds] [strategy];\n"

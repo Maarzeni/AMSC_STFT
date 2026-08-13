@@ -276,23 +276,23 @@ so a rank receives approximately `N/P` samples plus a halo of `frameSize - hopSi
 
 `STFTAnalyzer` required no modification to operate on a slice. `analyzeRange` is called with `startFrame = 0`, and the offset it computes internally, `frameIdx * hopSize`, is then already relative to the beginning of the slice, which is `offset_r` in global coordinates. Ranks that receive no frames at all — a signal shorter than one frame, or simply fewer frames than ranks — are given a send count of zero and still participate in the collective, so no configuration deadlocks. The root rank is the one exception to the slice-relative scheme: it passes `MPI_IN_PLACE` and keeps addressing its frames inside the full signal it already holds, because receiving its own block into a second buffer would add another `N/P` to the peak of the rank that is already the largest. Both strategies remain selectable through the `Distribution` parameter of the constructor, which defaults to `Distribution::Scatter`, so the comparison below can be reproduced rather than merely reported.
 
-The table was produced with `benchmark_MPI_Main` on ten minutes of synthetic audio (26 460 000 samples) at frame 1024 and hop 512. The sample counts are analytic and exact; the resident sizes are the `VmHWM` high-water marks read from `/proc/self/status`, reduced across ranks. Because that mark covers the whole lifetime of a process, each row comes from its own run:
+The table below was measured on Galileo100, on two ranks over thirty seconds of synthetic audio (1 323 000 samples) at frame 1024 and hop 512. The sample counts are analytic and exact; the resident sizes are the `VmHWM` high-water marks read from `/proc/self/status` and reduced across ranks. Because that mark covers the whole lifetime of a process, each row comes from its own run:
 
 ```bash
-mpirun -np 4 ./benchmarks/benchmark_MPI_Main 1 0 1024 512 600 bcast
-mpirun -np 4 ./benchmarks/benchmark_MPI_Main 1 0 1024 512 600 scatter
+mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 bcast
+mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 scatter
 ```
 
-| Ranks | Strategy | Input samples per rank | Input MiB | Peak RSS MIN (MiB) | Peak RSS MAX (MiB) | Peak RSS AVG (MiB) |
-|---|---|---|---|---|---|---|
-| 2 | broadcast | 26 460 000 | 201.9 | 327.2 | 731.6 | 529.4 |
-| 2 | scatter | 13 230 080 | 100.9 | 226.3 | 731.6 | 479.0 |
-| 4 | broadcast | 26 460 000 | 201.9 | 276.3 | 680.6 | 377.4 |
-| 4 | scatter | 6 615 296 | 50.5 | 124.6 | 680.6 | 263.8 |
+| Strategy | Input samples per rank | Input MiB | Peak RSS MIN (MiB) | Peak RSS MAX (MiB) | Peak RSS AVG (MiB) |
+|---|---|---|---|---|---|
+| broadcast | 1 323 000 | 10.09 | 35.30 | 55.57 | 45.44 |
+| scatter | 661 504 | 5.05 | 30.35 | 55.68 | 43.01 |
 
-The sample column is the average over the ranks, which is exact for the broadcast and for the two-rank scatter; at four ranks the blocks differ by a single hop, between 6 615 040 and 6 615 552 samples, because 51 678 frames do not divide evenly.
+The input footprint now falls as `N/P`, and the measured peak follows it: the lighter rank drops by 4.95 MiB against the 5.04 MiB the analytic column predicts, an agreement within two per cent. The maximum does not move — 55.57 MiB against 55.68, a tenth of a per cent — which is the intended effect of `MPI_IN_PLACE` on the root, and it is worth being explicit about why the maximum is the root's. The root rank reads the signal, so it holds *N* samples under either strategy, and it is also the rank that assembles the output; the scatter changes what the other *P − 1* ranks must hold, not what the reader holds. Subtracting the input from the peak leaves the same residue on both rows, about 25.3 MiB of process baseline — the binary, the MPI runtime, the OpenMP thread pools — which is why halving a thirty-second signal shows up as a fourteen per cent reduction of the process rather than a fifty per cent one. That baseline is a constant; the input is not, and it is the input that the 1.27 GB per rank of an hour of audio is made of.
 
-The input footprint now falls as `N/P`, and the measured peaks follow it: at four ranks the lightest rank drops from 276 MiB to 125 MiB, a saving of 151 MiB that matches the 151.4 MiB the analytic column predicts. The maximum does not move, and it is worth being explicit about why. The root rank reads the signal, so it holds *N* samples under either strategy, and it is also the rank that assembles the output; the scatter changes what the other *P − 1* ranks must hold, not what the reader holds. These numbers were measured in the Ubuntu 22.04 development container on a laptop, where the absolute values include the container's own baseline; the differences between the rows, which is what the table is about, are unaffected. Re-running the two commands above on Galileo100 reproduces the comparison at cluster scale.
+The same comparison in the development container, at four ranks over ten minutes of audio, shows the block dividing by four as expected: 201.9 MiB of input per rank under the broadcast against 50.5 MiB under the scatter, and a peak of 276.3 MiB against 124.6 MiB on the lightest rank, with the maximum unchanged at 680.6 MiB in both cases. The halo behaves as designed in both settings. In the Galileo100 run the two blocks overlap by exactly 512 samples, `frameSize - hopSize`, while the last 504 samples of the signal are read by no frame at all, so the two blocks together carry 1 323 008 samples against the signal's 1 323 000.
+
+What neither run shows is the case the change is actually about. Two ranks on one node with a thirty-second signal is a scaled-down check: it confirms the model to within two per cent, and it is that agreement which licenses extrapolating the model to a signal that does not fit in the memory of a single node. Demonstrating the latter directly needs the production partition and a considerably longer input; `RANKS="1 2 4 8" DURATION=600 ./benchmarks/run_scaling.sh` on `g100_usr_prod` is the natural next step.
 
 The gather side is deliberately unchanged, and that is where the remaining ceiling lies. The root rank still allocates the complete `totalFrames × numBins` magnitude matrix. At the default geometry that matrix stores `numBins / hopSize`, or 513/512, doubles for every input sample, which makes it very slightly *larger* than the signal it was computed from: the same hour of audio that occupies 1.27 GB as input yields about 1.27 GB of magnitudes on the root, on top of the signal the root read and the copy `analyze()` takes by value. The bottleneck has therefore moved from the input to the output rather than disappeared, and for a long enough recording it is the output that decides whether the run fits in memory. Removing it would mean not assembling the matrix at all — each rank writing its own range of frames directly through MPI-IO, or streaming block by block into the image exporter — which is beyond the scope of this change. A related limit sits in the same place: `MPI_Scatterv` and `MPI_Gatherv` express their counts and displacements as `int`, so both sides overflow above 2³¹ elements, around 13.5 hours of 44.1 kHz audio at this geometry. That limit is documented in the code rather than worked around.
 
@@ -405,6 +405,48 @@ OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main
 # Single-rank baseline
 mpirun -np 1 ./benchmarks/benchmark_MPI_Main
 ```
+
+Besides the timings, the run reports the per-rank memory footprint: an analytic table of the input samples each rank has to hold under both distribution strategies, and the measured peak resident size taken from `VmHWM`. A sixth argument selects the strategy (`scatter`, the default, or `bcast`), which is how the before/after comparison in [Distributing the signal: broadcast versus scatter](#distributing-the-signal-broadcast-versus-scatter) was produced. The peak is a whole-process high-water mark, so the two strategies have to be run as two separate processes for the figure to be attributable to either of them.
+
+### Results on Galileo100
+
+The numbers discussed here come from a single SLURM job on Galileo100 (job 21727805, 12 August 2026) running the Singularity image built by the CI pipeline, so they were produced by exactly the binaries the pipeline ships. The allocation was two ranks of two threads, four cores of an Intel Xeon Platinum 8260 at 2.4 GHz, on the `g100_all_serial` partition. All fifteen tests pass there, the four rank counts of the distributed STFT included, and the repetition-to-repetition standard deviation stays below half a per cent of the mean in every row, which is what makes differences of a few per cent readable at all.
+
+#### What a frame costs
+
+The serial STFT costs 119.5 µs per frame at every workload measured: 10.161 ms for 85 frames, 51.228 for 429, 102.659 for 860 and 308.663 for 2582, which is linear to four significant figures. A single forward `IterativeFFT` of the same size takes 111 µs, so the transform accounts for about 93 per cent of the cost of a frame, and everything around it — the copy with zero padding, the window, the packing into complex values, the magnitude — for the remaining seven. Two things follow from that. Optimising anything other than the FFT is not worth the effort at this geometry, and a frame is a large enough unit of work to be worth distributing on its own, which is the assumption both the OpenMP loop and the MPI decomposition rest on.
+
+| Transform size | RecursiveFFT | IterativeFFT | ParallelFFT (4 threads) |
+|---|---|---|---|
+| 1 024 | 0.135 | 0.111 | 0.048 |
+| 262 144 | 54.237 | 46.471 | 12.360 |
+
+*(fastest of seven repetitions, in milliseconds)*
+
+The same table settles a design question stated in `STFTAnalyzer.hpp`: whether to parallelise the frame loop and keep each transform serial, or to parallelise the transforms internally. At 1024 points `ParallelFFT` on four threads gains 2.80× over the iterative engine, whereas parallelising the frame loop with the same four threads gains 3.98×. A 1024-point transform is simply too small to keep four threads busy, and frame-level parallelism wins by enough — some forty per cent — that nesting the two is not worth revisiting. The picture would change for much larger frames, where `ParallelFFT` reaches 4.32× on its own at 65 536 points.
+
+#### Shared memory, distributed memory, and the two together
+
+| Workload | serial, 1 thread | OpenMP, 4 threads | MPI, 2 ranks | hybrid, 2 ranks × 2 threads |
+|---|---|---|---|---|
+| 85 frames | 10.161 | 2.656 | 5.273 | 2.765 |
+| 429 frames | 51.228 | 12.980 | 28.068 | 15.252 |
+| 860 frames | 102.659 | 25.790 | 55.706 | 29.933 |
+| 2582 frames | 308.663 | 77.578 | 165.125 | 87.625 |
+
+*(fastest of seven repetitions, in milliseconds, at frame 1024 and hop 512)*
+
+Reading the last row: four OpenMP threads turn 308.7 ms into 77.6, a speedup of 3.98× at 99.5 per cent efficiency; two MPI ranks turn it into 165.1, which is 1.87× at 93 per cent; the two together, on the same four cores, give 87.6 ms, 3.52× at 88 per cent. The ranking holds at every workload and it is the expected one. Threads share the signal and the output buffer and pay only for the fork and join of the parallel region, whereas ranks have to be sent their input and have their results gathered back.
+
+The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). A cleaner strong-scaling read is what `run_scaling.sh` exists for, since it compares `-np 1` against larger rank counts within a single binary.
+
+The practical conclusion for a single node is that MPI does not buy speed there — pure OpenMP is between 4 and 18 per cent faster than the hybrid at equal core count — and that it is not meant to. What the distributed layer buys is the ability to use more than one node and, since the scatter, the ability to hold a signal larger than the memory of one node. On a single node the hybrid configuration is nevertheless the sensible way to run the distributed binary: at 1.85× to 1.90× over pure MPI, the second thread per rank recovers nearly everything the process-level split gives away.
+
+One expectation stated in the benchmark's own notes is not borne out by the data. The hybrid gain does not improve as the frame count grows: it is 1.90× at 85 frames and 1.88× at 2582, flat within the noise. Eighty-five frames already amount to some ten milliseconds of work per rank, far more than an OpenMP region costs to open and close, so there is nothing left to amortise. The serial-versus-OpenMP table does show the expected ramp, from 3.83× to 3.98×, and it saturates just as early.
+
+The two distribution strategies were also timed against each other at 2582 frames, back to back within the same job step, which is what makes that particular comparison a fair one. The scatter is slightly faster: 159.7 ms against 161.4 with one thread per rank, and 82.3 against 84.0 in hybrid mode, so one to two per cent. That is the expected sign and the expected magnitude. A broadcast has to deliver *N* samples to each of the *P* ranks while the scatter delivers about *N* in total, so at two ranks the saving amounts to half of a ten-megabyte transfer set against a run of 160 ms, and the gap should widen with the rank count. The reason for the change was never speed, but it is worth recording that it costs none.
+
+The memory side of the same job is discussed in [Distributing the signal: broadcast versus scatter](#distributing-the-signal-broadcast-versus-scatter), where the measured drop matches the analytic prediction to within two per cent. Two limits of this campaign are worth stating plainly. The `g100_all_serial` partition runs on a login node shared with other users, so these are not exclusive-node timings, even if their stability across repetitions suggests the sharing did not perturb them; and two ranks on a single node cannot demonstrate memory scalability at the scale that motivated it, only confirm the model that predicts it.
 
 ---
 
