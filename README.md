@@ -391,7 +391,9 @@ OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
 
 ### MPI / hybrid benchmarks
 
-Compares pure MPI against hybrid MPI + OpenMP. Vary `-np` across runs to read the strong-scaling behaviour:
+Compares three configurations of the same run — a serial baseline, pure MPI, and hybrid MPI + OpenMP — and reports both parallel rows as speedups over the baseline. The baseline is the root rank computing the whole spectrogram alone, on one thread, with no scatter and no gather, using the very engine `MPI_STFTAnalyzer` composes; the other ranks wait in the barrier, so the timing is root's. Measuring it inside this binary rather than reading it off `benchmark_Main` is what makes the column a speedup in the proper sense: baseline and parallel rows then share the executable, the allocation, the signal and the repetition count. Dividing a speedup by the number of cores in use gives the efficiency, and dividing the two speedups by each other gives the gain of the threads over the processes. At `-np 1` the serial and MPI rows measure almost the same thing, and their agreement is a cheap check that the distributed path costs nothing when there is nothing to distribute.
+
+Vary `-np` across runs to read the strong-scaling behaviour:
 
 ```bash
 cd build
@@ -434,11 +436,11 @@ The same table settles a design question stated in `STFTAnalyzer.hpp`: whether t
 | 860 frames | 102.659 | 25.790 | 55.706 | 29.933 |
 | 2582 frames | 308.663 | 77.578 | 165.125 | 87.625 |
 
-*(fastest of seven repetitions, in milliseconds, at frame 1024 and hop 512)*
+*(fastest of seven repetitions, in milliseconds, at frame 1024 and hop 512; the first two columns from `benchmark_Main`, the last two from `benchmark_MPI_Main`)*
 
 Reading the last row: four OpenMP threads turn 308.7 ms into 77.6, a speedup of 3.98× at 99.5 per cent efficiency; two MPI ranks turn it into 165.1, which is 1.87× at 93 per cent; the two together, on the same four cores, give 87.6 ms, 3.52× at 88 per cent. The ranking holds at every workload and it is the expected one. Threads share the signal and the output buffer and pay only for the fork and join of the parallel region, whereas ranks have to be sent their input and have their results gathered back.
 
-The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). A cleaner strong-scaling read is what `run_scaling.sh` exists for, since it compares `-np 1` against larger rank counts within a single binary.
+The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). That weakness has since been removed from the tool rather than argued around: `benchmark_MPI_Main` now measures its own serial baseline in the same run, so repeating this campaign yields the comparison inside a single table, and `run_scaling.sh` remains the way to read strong scaling across rank counts.
 
 The practical conclusion for a single node is that MPI does not buy speed there — pure OpenMP is between 4 and 18 per cent faster than the hybrid at equal core count — and that it is not meant to. What the distributed layer buys is the ability to use more than one node and, since the scatter, the ability to hold a signal larger than the memory of one node. On a single node the hybrid configuration is nevertheless the sensible way to run the distributed binary: at 1.85× to 1.90× over pure MPI, the second thread per rank recovers nearly everything the process-level split gives away.
 

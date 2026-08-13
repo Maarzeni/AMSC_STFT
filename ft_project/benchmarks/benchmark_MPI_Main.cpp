@@ -4,10 +4,17 @@
  *
  * @details
  * Benchmarks MPI_STFTAnalyzer<IterativeFFT, HannWindow> on a long signal,
- * comparing two configurations of the SAME distributed run:
+ * comparing three configurations measured in the SAME run:
  *
+ *   - serial     : root rank only, 1 thread, no distribution — the baseline
  *   - MPI pure   : 1 OpenMP thread per rank
  *   - hybrid     : all available OpenMP threads per rank
+ *
+ * Both parallel rows report their speedup over the serial row of the same
+ * workload, so the speedup column is a parallel speedup in the usual sense and
+ * dividing it by the number of cores in use (ranks x threads) gives the
+ * efficiency directly.  The gain of the threads over the processes, which
+ * earlier versions printed instead, is the ratio of the two speedups.
  *
  * Wall-clock time per repetition is the time of the SLOWEST rank
  * (MPI_Reduce with MPI_MAX), since that is what bounds the collective.
@@ -275,6 +282,11 @@ int main(int argc, char** argv) {
     // workload: only the signal handed to analyze() changes.
     MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(ctx, frame, hop, SR, dist);
 
+    // Same engine the analyzer composes, driven directly on the root rank: the
+    // serial baseline of the table below.  Constructed once, like the analyzer,
+    // since only the signal handed to it changes across the sweep.
+    STFTAnalyzer<IterativeFFT, HannWindow> serialEngine(frame, hop, SR);
+
     // Captured on every rank before clamping: omp_set_num_threads() writes the
     // same internal variable that omp_get_max_threads() reads back, so after
     // setThreads(1) the real per-rank core count is no longer readable.
@@ -317,18 +329,42 @@ int main(int argc, char** argv) {
             bench::doNotOptimize(out);
         };
 
-        // MPI pure: 1 thread per rank
+        // Serial reference: the root rank alone, one thread, no distribution at
+        // all.  The other ranks fall through the lambda and wait in the barrier
+        // that measureMPI puts before each timed region, so the MPI_MAX over the
+        // per-rank times is root's serial time.
+        //
+        // Measuring it here rather than reading it off benchmark_Main matters:
+        // the baseline then comes from the same binary, the same allocation and
+        // the same repetitions as the rows it is compared against, which is what
+        // makes the speedup column a speedup rather than a ratio between two
+        // separate runs.  It costs one serial pass per workload, P times the
+        // work of the row below it — negligible in absolute terms, and the price
+        // of a baseline that is actually comparable.
+        auto runSerial = [&]{
+            if (!ctx.isRoot()) return;
+            const SpectrogramData out = serialEngine.analyze(signal);
+            bench::doNotOptimize(out);
+        };
+
+        // 1 thread per rank for both of the next two rows.
         setThreads(1);
+
+        const bench::Stats sSerial = measureMPI(ctx, warmup, reps, runSerial);
+        if (ctx.isRoot())
+            bench::printRow("serial (1 rank, 1 thr)", frames, sSerial);
+
+        // MPI pure: 1 thread per rank
         const bench::Stats sMPI = measureMPI(ctx, warmup, reps, runOnce);
         if (ctx.isRoot())
-            bench::printRow("MPI pure (1 thr/rank)", frames, sMPI);
+            bench::printRow("MPI pure (1 thr/rank)", frames, sMPI, sSerial.mean);
 
         // Hybrid: all threads per rank
         setThreads(nThreads);
         const bench::Stats sHybrid = measureMPI(ctx, warmup, reps, runOnce);
         if (ctx.isRoot()) {
             bench::printRow("hybrid (" + std::to_string(nThreads) + " thr/rank)",
-                            frames, sHybrid, sMPI.mean);
+                            frames, sHybrid, sSerial.mean);
             std::cout << "\n";
         }
     }
@@ -389,11 +425,15 @@ int main(int argc, char** argv) {
     if (ctx.isRoot()) {
         std::cout << "\nNotes:\n"
                   << "  - time per rep = slowest rank (MPI_MAX).\n"
-                  << "  - speedup is hybrid vs MPI-pure at the SAME workload.\n"
+                  << "  - speedup is vs the serial row of the SAME workload;\n"
+                  << "    divide by ranks x threads for the efficiency, and\n"
+                  << "    divide the two speedups for the hybrid-vs-MPI gain.\n"
+                  << "  - the serial row is root alone, one thread, no scatter\n"
+                  << "    and no gather: the same code the analyzer composes.\n"
                   << "  - each block is one workload; the frame count grows down\n"
                   << "    the table, so the hybrid gain can be read against it.\n"
-                  << "  - vary -np across runs to read strong scaling;\n"
-                  << "    -np 1 is the serial/OpenMP-equivalent baseline.\n"
+                  << "  - vary -np across runs to read strong scaling; the serial\n"
+                  << "    row is the same at every -np, which is a useful check.\n"
                   << "  - args: [reps] [warmup] [frame] [hop] [seconds] [strategy];\n"
                   << "    giving [seconds] replaces the sweep with one workload.\n"
                   << "  - the analytic table counts what the distribution forces a\n"
