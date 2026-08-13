@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# =============================================================================
+# AMSC_STFT — full benchmark suite, one recipe for every environment.
+#
+# This script is the SINGLE SOURCE OF TRUTH for what the project measures. The
+# GitHub workflow, the SLURM job and a human at a terminal all call it, so the
+# numbers they produce are comparable by construction: same repetitions, same
+# frame geometry, same rank/thread layout, same output file names.
+#
+# ─── How to run it ──────────────────────────────────────────────────────────
+#
+#   Laptop or cluster, inside the container (recommended — no toolchain needed):
+#       apptainer exec --bind "$PWD:$PWD" amsc_stft.sif bash scripts/run_suite.sh
+#
+#   Anywhere the project is already built natively (this is what CI does):
+#       bash scripts/run_suite.sh
+#
+#   Under SLURM: see job.sh, which is just an sbatch header around the line above.
+#
+# ─── Knobs (all optional, all environment variables) ────────────────────────
+#
+#   BUILD_DIR    where the compiled binaries live. Auto-detected: the in-image
+#                path when running inside the container, else ft_project/build.
+#   RESULTS_DIR  where result files are written.        default ./results
+#   PREFIX       file name prefix, i.e. which machine.  auto: cluster/github/local
+#   RANKS        MPI ranks.                default SLURM_NTASKS, else 2
+#   THREADS      OpenMP threads per rank.   default SLURM_CPUS_PER_TASK, else 2
+#   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
+#   MEM_DURATION seconds of audio for the memory comparison.  default 30
+#
+#   e.g.  RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
+# =============================================================================
+
+# No `set -e`: a failing benchmark must not prevent the remaining sections from
+# running, otherwise one broken step costs us every other result of the run.
+set -uo pipefail
+
+# ── Where are the binaries? ─────────────────────────────────────────────────
+# Inside the container the project lives at a fixed absolute path baked in at
+# build time; outside, it sits next to this script.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IN_IMAGE_BUILD=/app/AMSC_STFT/ft_project/build
+
+if [ -z "${BUILD_DIR:-}" ]; then
+    if [ -d "${IN_IMAGE_BUILD}" ]; then
+        BUILD_DIR="${IN_IMAGE_BUILD}"
+    else
+        BUILD_DIR="${REPO_ROOT}/ft_project/build"
+    fi
+fi
+
+# ── Preflight ───────────────────────────────────────────────────────────────
+# Checked up front and all at once: a half-equipped machine otherwise produces a
+# full set of result files containing nothing but "command not found", which is
+# far worse than refusing to start.
+container_hint() {
+    echo "" >&2
+    echo "  The container carries the whole toolchain, so this always works:" >&2
+    echo "    apptainer exec --bind \"\$PWD:\$PWD\" amsc_stft.sif bash scripts/run_suite.sh" >&2
+    echo "" >&2
+    echo "  Get amsc_stft.sif from the CI artifact 'amsc-stft-sif', or build it:" >&2
+    echo "    apptainer build --fakeroot amsc_stft.sif Singularity.def" >&2
+}
+
+missing=""
+[ -x "${BUILD_DIR}/benchmarks/benchmark_Main" ]     || missing="${missing} benchmark_Main"
+[ -x "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ] || missing="${missing} benchmark_MPI_Main"
+command -v ctest  >/dev/null 2>&1                   || missing="${missing} ctest"
+command -v mpirun >/dev/null 2>&1                   || missing="${missing} mpirun"
+
+if [ -n "${missing}" ]; then
+    echo "ERROR: missing:${missing}" >&2
+    echo "       (looked for binaries under ${BUILD_DIR})" >&2
+    container_hint
+    exit 1
+fi
+
+# An executable bit proves nothing about a binary built elsewhere: one compiled
+# against a newer glibc dies at load time. ldd resolves the same libraries the
+# loader would, and reports "not found" without running anything, so the problem
+# surfaces here instead of as four files full of loader errors.
+# Only an unresolved library counts as a failure: ldd also exits non-zero for a
+# statically linked binary or a wrapper script, and neither is a problem.
+ldd_out=$(ldd "${BUILD_DIR}/benchmarks/benchmark_Main" 2>&1)
+if echo "${ldd_out}" | grep -qi 'not found'; then
+    echo "ERROR: ${BUILD_DIR}/benchmarks/benchmark_Main cannot be loaded here:" >&2
+    echo "${ldd_out}" | grep -i 'not found' | sed 's/^/       /' >&2
+    echo "       (typically a build produced on a different distribution)" >&2
+    container_hint
+    exit 1
+fi
+
+# Sections record their own outcome so the run ends with a verdict instead of an
+# unconditional "Done".
+FAILED=""
+note_status() {  # note_status <exit code> <section name>
+    [ "$1" -eq 0 ] || FAILED="${FAILED} $2"
+}
+
+# ── Which machine are we on? ────────────────────────────────────────────────
+# Only used to label the output files, so a laptop run never overwrites — or
+# gets mistaken for — a cluster run.
+if [ -z "${PREFIX:-}" ]; then
+    if   [ -n "${SLURM_JOB_ID:-}" ];    then PREFIX=cluster
+    elif [ -n "${GITHUB_ACTIONS:-}" ];  then PREFIX=github
+    else                                     PREFIX=local
+    fi
+fi
+
+RESULTS_DIR=${RESULTS_DIR:-${PWD}/results}
+RANKS=${RANKS:-${SLURM_NTASKS:-2}}
+THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-2}}
+BENCH_ARGS=${BENCH_ARGS:-"7 2 1024 512"}
+MEM_DURATION=${MEM_DURATION:-30}
+TOTAL_CORES=$(( RANKS * THREADS ))
+
+mkdir -p "${RESULTS_DIR}"
+
+# ── MPI: make it survive both a container and an oversubscribed laptop ──────
+MPIRUN_EXTRA=""
+
+# OpenMPI needs a writable TMPDIR for its ORTE session directory. On the CINECA
+# login nodes the default points at a read-only filesystem, which aborts
+# mpirun before any rank starts, so fall back to a directory we know we can
+# write. Tested rather than assumed, since it is writable almost everywhere.
+if ! touch "${TMPDIR:-/tmp}/.amsc_write_test" 2>/dev/null; then
+    export TMPDIR="${RESULTS_DIR}/../tmp"
+    mkdir -p "${TMPDIR}"
+    echo "note: default TMPDIR not writable, using ${TMPDIR}"
+else
+    rm -f "${TMPDIR:-/tmp}/.amsc_write_test"
+fi
+MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca orte_tmpdir_base ${TMPDIR:-/tmp}"
+
+# Inside a container, OpenMPI's shared-memory path tries Cross Memory Attach
+# (process_vm_readv), which needs ptrace privileges the container lacks: every
+# large transfer then fails with "Read -1 ... errno = 1" and is retried on a
+# slower path, polluting the timings. Skipping single-copy avoids the detour.
+if [ -n "${APPTAINER_CONTAINER:-}${SINGULARITY_CONTAINER:-}" ]; then
+    MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca btl_vader_single_copy_mechanism none"
+fi
+
+# OpenMPI counts a "slot" per PHYSICAL core, not per hardware thread: on a
+# 2-core laptop with SMT, nproc says 4 but only 2 slots exist, and anything
+# asking for more is refused outright with "not enough slots available".
+# The unit tests hit this before the benchmarks do — they launch np=1..4
+# regardless of RANKS — so the permission is granted unconditionally, exactly
+# as the CI workflow and the container image already do.
+PHYSICAL_CORES=$(lscpu -p=CORE,SOCKET 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+[ "${PHYSICAL_CORES}" -gt 0 ] 2>/dev/null || PHYSICAL_CORES=$(nproc)
+export OMPI_MCA_rmaps_base_oversubscribe=1
+
+# mpirun still needs to be told explicitly when we knowingly ask for more
+# workers than there are cores to put them on.
+if [ "${TOTAL_CORES}" -gt "${PHYSICAL_CORES}" ]; then
+    MPIRUN_EXTRA="${MPIRUN_EXTRA} --oversubscribe"
+fi
+
+# The login nodes export DISPLAY without a reachable X server, which makes the
+# container print "No protocol specified" over the results. Purely cosmetic.
+unset DISPLAY XAUTHORITY
+
+# ── Section 0: what machine produced these numbers ──────────────────────────
+# PHYSICAL_CORES was computed with the MPI settings above; it is printed here
+# because nproc counts hardware threads, and a 2-core machine with SMT reports
+# 4. Reading a 2x speedup as poor scaling "on 4 cores" is the single easiest
+# way to misread these tables.
+{
+    echo "environment  : ${PREFIX}${SLURM_JOB_ID:+ (SLURM job ${SLURM_JOB_ID})}"
+    echo "node         : $(hostname)"
+    echo "partition    : ${SLURM_JOB_PARTITION:-n/a (not a batch job)}"
+    echo "ranks x thr  : ${RANKS} x ${THREADS} = ${TOTAL_CORES} workers"
+    echo "cores        : ${PHYSICAL_CORES} physical, $(nproc) logical (SMT counts twice)"
+    echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
+    echo "container    : ${APPTAINER_CONTAINER:-${SINGULARITY_CONTAINER:-none (native build)}}"
+    echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo ""
+    lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|CPU MHz|L3 cache'
+} | tee "${RESULTS_DIR}/${PREFIX}_env.txt"
+
+# ── Section 1: unit tests ───────────────────────────────────────────────────
+# ctest insists on writing Testing/Temporary/LastTest.log inside the build
+# directory, which is read-only when it lives in a .sif image. Copying just the
+# generated CTestTestfile.cmake files elsewhere sidesteps that: each one
+# registers its tests by ABSOLUTE path, so the very same binaries still run.
+echo ""
+echo "==================== [1/4] Unit tests (ctest) ============================"
+CTEST_MIRROR="${RESULTS_DIR}/../ctest-run"
+rm -rf "${CTEST_MIRROR}"
+mkdir -p "${CTEST_MIRROR}"
+( cd "${BUILD_DIR}" && find . -name CTestTestfile.cmake -exec cp --parents -t "${CTEST_MIRROR}" {} + )
+
+export OMP_NUM_THREADS=${TOTAL_CORES}
+( cd "${CTEST_MIRROR}" && ctest --output-on-failure ) \
+    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_ctest.txt"
+note_status "${PIPESTATUS[0]}" "unit-tests"
+
+# ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
+echo ""
+echo "============== [2/4] Benchmark: serial / OpenMP =========================="
+export OMP_NUM_THREADS=${TOTAL_CORES}
+"${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS} \
+    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.txt"
+note_status "${PIPESTATUS[0]}" "benchmark-openmp"
+
+# ── Section 3: distributed / hybrid benchmark ───────────────────────────────
+echo ""
+echo "============ [3/4] Benchmark: MPI / hybrid ==============================="
+export OMP_NUM_THREADS=${THREADS}
+mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
+    "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS} \
+    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.txt"
+note_status "${PIPESTATUS[0]}" "benchmark-mpi"
+
+# ── Section 4: memory, broadcast vs scatter ─────────────────────────────────
+# VmHWM is a high-water mark of the whole process, so one process can only
+# report one strategy: running both in sequence would attribute the broadcast's
+# peak to the scatter too. Hence two launches, identical but for the strategy.
+echo ""
+echo "======== [4/4] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
+: > "${MEMFILE}"
+export OMP_NUM_THREADS=${THREADS}
+
+for STRATEGY in bcast scatter; do
+    {
+        echo ""
+        echo "════════════════ distribution: ${STRATEGY} ════════════════"
+    } | tee -a "${MEMFILE}"
+
+    # ${BENCH_ARGS} ${MEM_DURATION} <strategy> reuses the sweep's repetitions
+    # and geometry, so the distribution is the only difference between the two.
+    mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
+        "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+        ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}" \
+        2>&1 | tee -a "${MEMFILE}"
+    note_status "${PIPESTATUS[0]}" "memory-${STRATEGY}"
+done
+
+echo ""
+echo "=========================================================================="
+if [ -n "${FAILED}" ]; then
+    echo "FAILED sections:${FAILED}"
+    echo "Results in ${RESULTS_DIR} (incomplete):"
+    ls -1 "${RESULTS_DIR}" | sed 's/^/  /'
+    exit 1
+fi
+
+echo "All sections completed. Results in ${RESULTS_DIR}:"
+ls -1 "${RESULTS_DIR}" | sed 's/^/  /'

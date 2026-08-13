@@ -48,36 +48,14 @@ jobs:
       # Parameters are kept identical to job.sh so the two tables line up.
       - name: Run benchmarks on GitHub runner
         env:
-          BENCH_ARGS: "7 2 1024 512" # reps warmup frame hop — must match job.sh
-          RANKS: 2 # same rank x thread layout as the SLURM job
+          # Same rank x thread layout as the SLURM job. Everything else the
+          # script decides for itself; scripts/run_suite.sh is the one place
+          # where the benchmark parameters are defined, shared by this runner,
+          # the cluster job and any manual run.
+          RANKS: 2
           THREADS: 2
-        run: |
-          cd ft_project/build
-          RESULTS="${GITHUB_WORKSPACE}/results"
-          mkdir -p "${RESULTS}"
-
-          {
-            echo "environment  : GitHub Actions runner (${RUNNER_OS}, ${GITHUB_RUN_ID})"
-            echo "node         : $(hostname)"
-            echo "partition    : n/a (shared vCPU, NOT a dedicated node)"
-            echo "ranks x thr  : ${RANKS} x ${THREADS} = $((RANKS * THREADS)) cores (nproc reports $(nproc))"
-            echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
-            echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo ""
-            lscpu | grep -E 'Model name|^CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|CPU MHz|L3 cache'
-          } | tee "${RESULTS}/github_env.txt"
-
-          # Serial / OpenMP: all cores, matching the cluster's TOTAL_CORES
-          OMP_NUM_THREADS=$((RANKS * THREADS)) \
-            ./benchmarks/benchmark_Main ${BENCH_ARGS} \
-            2>&1 | tee "${RESULTS}/github_benchmark_openmp.txt"
-
-          # MPI / hybrid: oversubscribe, since the runner may have fewer cores
-          export OMPI_MCA_rmaps_base_oversubscribe=1
-          OMP_NUM_THREADS=${THREADS} \
-            mpirun --oversubscribe -np ${RANKS} \
-            ./benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
-            2>&1 | tee "${RESULTS}/github_benchmark_mpi.txt"
+          RESULTS_DIR: ${{ github.workspace }}/results
+        run: bash scripts/run_suite.sh
 
       # Step 6: [Artifact] Publish the runner-side benchmark output
       - name: Upload GitHub benchmark results
@@ -154,9 +132,12 @@ jobs:
           ssh $SSH_OPTS ${REMOTE} \
             "mkdir -p ${REMOTE_PATH}/input && rm -rf ${REMOTE_PATH}/results && mkdir -p ${REMOTE_PATH}/results"
 
-          # Copies the container, SLURM script, and input data
+          # Copies the container, SLURM script, and the shared benchmark suite
+          # (job.sh runs scripts/run_suite.sh inside the container, so the
+          # scripts directory has to travel with it)
           scp $SSH_OPTS amsc_stft.sif  ${REMOTE}:${REMOTE_PATH}/
           scp $SSH_OPTS job.sh             ${REMOTE}:${REMOTE_PATH}/
+          scp -r $SSH_OPTS scripts         ${REMOTE}:${REMOTE_PATH}/
 
       # Submits the SLURM job and blocks until it finishes.
       # --wait is what makes the results retrievable: without it sbatch returns

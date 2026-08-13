@@ -65,138 +65,42 @@ SIF="amsc_stft.sif"
 BUILD=/app/AMSC_STFT/ft_project/build
 BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 
-# ── Writable scratch ──────────────────────────────────────────────────────────
-# The .sif is a read-only squashfs, and on the login nodes /scratch_local (the
-# default TMPDIR) is read-only too. Two things need to write somewhere:
-#   * ctest       → build/Testing/Temporary/LastTest.log, INSIDE the image;
-#                   handled in section 1 by mirroring the CTest metadata out.
-#   * OpenMPI     → its ORTE session directory under TMPDIR; without a writable
-#                   one, orte_init fails and mpirun never starts the ranks.
-# The submission directory is bind-mounted and writable, so TMPDIR points there.
-TMPWORK="${SLURM_SUBMIT_DIR}/tmp"
-mkdir -p "${TMPWORK}"
-export SINGULARITYENV_TMPDIR="${TMPWORK}"   # TMPDIR as seen INSIDE the container
-export APPTAINERENV_TMPDIR="${TMPWORK}"     # same, for the apptainer-named stack
-
-# The login node exports DISPLAY/XAUTHORITY without a reachable X server, which
-# makes container invocations print "No protocol specified". Purely cosmetic.
-unset DISPLAY XAUTHORITY
-
-# OpenMPI's shared-memory BTL (vader, OpenMPI 4.x on Ubuntu 22.04) tries to move
-# large messages with Cross Memory Attach, i.e. process_vm_readv(). That syscall
-# needs ptrace privileges the container does not have, so every scatter of the
-# signal fails with "Read -1, expected <n>, errno = 1" (EPERM) before OpenMPI
-# retries through a slower copy-in/copy-out path. The data still arrives, but
-# the timings absorb the failed attempt. Disabling single-copy skips it.
-MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
-
-# Benchmark parameters: reps, warmup, frame, hop.  Kept IDENTICAL to the ones the
-# CI workflow uses on the GitHub runner, otherwise the two result tables measure
-# different workloads and cannot be compared.  No 5th argument, so both binaries
-# run their full duration sweep (1, 5, 10, 30 s of audio).
-BENCH_ARGS="7 2 1024 512"
-
-# Every result file is collected here; the CD workflow copies this folder back
-# and publishes it as a build artifact.
+# ── Run the benchmark suite ───────────────────────────────────────────────────
+# Everything measured here lives in scripts/run_suite.sh, which the GitHub
+# workflow and any manual run call too: one recipe, so the three environments
+# stay comparable instead of drifting apart.
+#
+# The script is executed INSIDE the container, where the binaries are. It works
+# out on its own that the login node's default TMPDIR is read-only, that
+# OpenMPI's Cross Memory Attach path is unavailable in a container, and how many
+# ranks/threads SLURM reserved.
 RESULTS="${SLURM_SUBMIT_DIR}/results"
 mkdir -p "${RESULTS}"
 
-# Machine description, so a results file is interpretable months later without
-# having to remember which node it ran on.
-{
-    echo "environment  : CINECA Galileo100 (SLURM job ${SLURM_JOB_ID})"
-    echo "node         : ${SLURMD_NODENAME}"
-    echo "partition    : ${SLURM_JOB_PARTITION}"
-    echo "ranks x thr  : ${SLURM_NTASKS} x ${SLURM_CPUS_PER_TASK} = ${TOTAL_CORES} cores"
-    echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
-    echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo ""
-    lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|CPU MHz|L3 cache'
-} | tee "${RESULTS}/cluster_env.txt"
+export SINGULARITYENV_RESULTS_DIR="${RESULTS}"
+export SINGULARITYENV_PREFIX="cluster"
+export APPTAINERENV_RESULTS_DIR="${RESULTS}"
+export APPTAINERENV_PREFIX="cluster"
+
+singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \
+    bash "${SLURM_SUBMIT_DIR}/scripts/run_suite.sh"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. Unit tests (GoogleTest via ctest)
+# Examples: WAV → spectrogram PNG (output written next to the host WAV)
 # ══════════════════════════════════════════════════════════════════════════════
+# Not part of the measured suite: these read a WAV from the HOST and write a PNG
+# back to it, so they belong to the cluster deployment rather than to the
+# benchmarks. They do need the same two MPI workarounds the suite applies
+# internally — a writable TMPDIR for the ORTE session directory, and no Cross
+# Memory Attach inside the container.
 echo ""
-echo "==================== [1/5] Running unit tests (ctest) ===================="
-export OMP_NUM_THREADS=${TOTAL_CORES}
+echo "==================== Examples (STFT spectrograms) ========================"
+TMPWORK="${SLURM_SUBMIT_DIR}/tmp"
+mkdir -p "${TMPWORK}"
+export SINGULARITYENV_TMPDIR="${TMPWORK}" APPTAINERENV_TMPDIR="${TMPWORK}"
+unset DISPLAY XAUTHORITY
+MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
 
-# --writable-tmpfs is not enough here (it is refused on this stack), so instead
-# ctest is run from a writable MIRROR of the build tree. Only the generated
-# CTestTestfile.cmake files are copied: each one registers its tests by ABSOLUTE
-# path into the image, so the very same read-only binaries are executed, while
-# Testing/Temporary/LastTest.log now lands on writable storage.
-CTESTDIR="${SLURM_SUBMIT_DIR}/ctest-run"
-rm -rf "${CTESTDIR}"
-mkdir -p "${CTESTDIR}"
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
-    sh -c "find . -name CTestTestfile.cmake -exec cp --parents -t ${CTESTDIR} {} +"
-
-singularity exec ${BIND} --pwd ${CTESTDIR} ${SIF} \
-    ctest --output-on-failure \
-    2>&1 | tee "${RESULTS}/cluster_ctest.txt"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. Serial / OpenMP benchmark (single process, all reserved cores)
-# ══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo "============== [2/5] Benchmark: serial / OpenMP (benchmark_Main) =========="
-export OMP_NUM_THREADS=${TOTAL_CORES}
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
-    ${BUILD}/benchmarks/benchmark_Main ${BENCH_ARGS} \
-    2>&1 | tee "${RESULTS}/cluster_benchmark_openmp.txt"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. Distributed / hybrid benchmark (MPI ranks × OpenMP threads, single node)
-# ══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo "============ [3/5] Benchmark: MPI / hybrid (benchmark_MPI_Main) ==========="
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
-    mpirun --bind-to none -np ${SLURM_NTASKS} \
-    ${MCA_OPTS} \
-    ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} \
-    2>&1 | tee "${RESULTS}/cluster_benchmark_mpi.txt"
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. Memory: broadcast vs scatter, measured (paired runs)
-# ══════════════════════════════════════════════════════════════════════════════
-# The analytic footprint table printed above is computed, not observed. The
-# measured counterpart is VmHWM, a high-water mark of the WHOLE process: a
-# process that ran both strategies would carry the broadcast's peak into the
-# scatter's reading and report them as equal. So the two strategies need two
-# separate launches, which is what this section does.
-#
-# Passing a strategy means passing [seconds] too (strategy is the 6th argument),
-# and that collapses the duration sweep to one workload. 30 s is the largest the
-# sweep uses, hence where the strategies differ most: 10.09 MiB of signal per
-# rank under broadcast against 5.05 MiB under scatter.
-echo ""
-echo "======== [4/5] Memory: broadcast vs scatter (peak RSS, paired runs) ======="
-MEMFILE="${RESULTS}/cluster_memory_bcast_vs_scatter.txt"
-: > "${MEMFILE}"
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-
-for STRATEGY in bcast scatter; do
-    {
-        echo ""
-        echo "════════════════ distribution: ${STRATEGY} ════════════════"
-    } | tee -a "${MEMFILE}"
-
-    # ${BENCH_ARGS} 30 <strategy> keeps reps/warmup/frame/hop identical to the
-    # sweep above, so only the distribution differs between the two runs.
-    singularity exec ${BIND} --pwd ${BUILD} ${SIF} \
-        mpirun --bind-to none -np ${SLURM_NTASKS} \
-        ${MCA_OPTS} \
-        ${BUILD}/benchmarks/benchmark_MPI_Main ${BENCH_ARGS} 30 ${STRATEGY} \
-        2>&1 | tee -a "${MEMFILE}"
-done
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. Examples: WAV → spectrogram PNG (output written next to the host WAV)
-# ══════════════════════════════════════════════════════════════════════════════
-echo ""
-echo "==================== [5/5] Examples (STFT spectrograms) =================="
 WAV="${SLURM_SUBMIT_DIR}/ft_project/tests/data/examples_test-audio.wav"
 if [ -f "${WAV}" ]; then
     # Serial/OpenMP example: <stem>_spectrogram.png next to the input WAV
