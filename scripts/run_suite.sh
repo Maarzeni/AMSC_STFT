@@ -283,16 +283,41 @@ if [ "${SCALING:-1}" != "0" ]; then
         esac
     fi
 
+    # Each run of the binary reports BOTH decompositions at the rank count it was
+    # given: "MPI pure" always uses one thread per rank, "hybrid" uses
+    # OMP_NUM_THREADS of them. Leaving that at 1 makes the two rows identical and
+    # hides OpenMP entirely, so the sweep runs with 2 threads per rank: at every
+    # P the file then shows P x 1 against P x 2, i.e. what the second thread buys.
+    SCALING_THREADS=${SCALING_THREADS:-2}
+    export OMP_NUM_THREADS=${SCALING_THREADS}
+
+    # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the machine
+    # one step earlier than the pure row does. Past this rank count its numbers
+    # measure oversubscription rather than scaling — recorded in the file itself,
+    # because a reader six months from now will not remember the core count.
+    HYBRID_FITS=$(( MAX_WORKERS / SCALING_THREADS ))
+
     echo ""
     echo "======== [5/5] Strong scaling: ranks =${SCALING_RANKS} ==================="
     SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.txt"
-    : > "${SCALEFILE}"
-    export OMP_NUM_THREADS=1
+    {
+        echo "Strong scaling sweep — fixed problem, increasing ranks"
+        echo "  machine        : ${PHYSICAL_CORES} physical cores, ${MAX_WORKERS} usable"
+        echo "  rank counts    :${SCALING_RANKS}"
+        echo "  threads/rank   : 1 (MPI pure row) and ${SCALING_THREADS} (hybrid row)"
+        echo "  workload       : ${SCALING_DURATION:-${MEM_DURATION}} s of audio, held fixed"
+        echo "  honest up to   : ${HYBRID_FITS} ranks for the hybrid row,"
+        echo "                   ${MAX_WORKERS} ranks for the MPI pure row;"
+        echo "                   beyond that the workers exceed the cores."
+    } > "${SCALEFILE}"
 
     for P in ${SCALING_RANKS}; do
+        hybrid_workers=$(( P * SCALING_THREADS ))
+        fit_note=""
+        [ "${hybrid_workers}" -gt "${MAX_WORKERS}" ] && fit_note="  [hybrid oversubscribed]"
         {
             echo ""
-            echo "════════════════ -np ${P} (1 thread/rank) ════════════════"
+            echo "════════ -np ${P}: pure ${P}x1 = ${P} workers, hybrid ${P}x${SCALING_THREADS} = ${hybrid_workers} workers${fit_note}"
         } | tee -a "${SCALEFILE}"
 
         # Fixed problem size across the sweep — that is what makes it STRONG
