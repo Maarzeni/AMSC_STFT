@@ -33,6 +33,11 @@
 #                  allocation, or the machine's physical cores
 #   SCALING_RANKS  explicit rank list, e.g. "1 2 4 8", overriding MAX_WORKERS
 #   SCALING_DURATION seconds of audio held fixed across the sweep. default 30
+#   SCALING_THREADS  threads/rank for the hybrid row of the rank sweep. default 2
+#
+#   THREAD_SCALING set to 0 to skip the OpenMP thread sweep.  default on
+#   THREAD_LIST    explicit thread list, e.g. "1 2 4 8"; default: powers of two
+#                  up to the physical cores, plus one SMT point if there is one
 #
 #   e.g.  RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
 #         SCALING_RANKS="1 2 4 8 16" bash scripts/run_suite.sh
@@ -105,6 +110,21 @@ note_status() {  # note_status <exit code> <section name>
     [ "$1" -eq 0 ] || FAILED="${FAILED} $2"
 }
 
+# Powers of two up to <max>, with <max> appended when it is not itself one, so a
+# 6-core machine sweeps 1 2 4 6 instead of stopping at 4 and wasting two cores.
+sweep_list() {  # sweep_list <max>
+    local max=$1 p=1 out=""
+    while [ "${p}" -le "${max}" ]; do
+        out="${out} ${p}"
+        p=$(( p * 2 ))
+    done
+    case " ${out} " in
+        *" ${max} "*) ;;
+        *) out="${out} ${max}" ;;
+    esac
+    echo "${out}"
+}
+
 # ── Which machine are we on? ────────────────────────────────────────────────
 # Only used to label the output files, so a laptop run never overwrites — or
 # gets mistaken for — a cluster run.
@@ -156,6 +176,21 @@ fi
 # as the CI workflow and the container image already do.
 PHYSICAL_CORES=$(lscpu -p=CORE,SOCKET 2>/dev/null | grep -v '^#' | sort -u | wc -l)
 [ "${PHYSICAL_CORES}" -gt 0 ] 2>/dev/null || PHYSICAL_CORES=$(nproc)
+
+# Captured once, here, because coreutils nproc honours OMP_NUM_THREADS: once a
+# section sets it to 2, every later nproc answers 2 and the machine appears to
+# shrink. `nproc --all` would ignore it but would also ignore CPU affinity, and
+# under a SLURM cgroup that reports the whole node instead of the allocation.
+LOGICAL_CPUS=$(nproc)
+
+# How many cores the sweeps may actually use. Under SLURM this is the allocation,
+# NOT what lscpu reports: on a login node lscpu sees all 48 cores of the machine
+# while the job holds 4, and a sweep sized on 48 would trample the other users.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    AVAILABLE_CORES=${TOTAL_CORES}
+else
+    AVAILABLE_CORES=${PHYSICAL_CORES}
+fi
 export OMPI_MCA_rmaps_base_oversubscribe=1
 
 # mpirun still needs to be told explicitly when we knowingly ask for more
@@ -178,7 +213,7 @@ unset DISPLAY XAUTHORITY
     echo "node         : $(hostname)"
     echo "partition    : ${SLURM_JOB_PARTITION:-n/a (not a batch job)}"
     echo "ranks x thr  : ${RANKS} x ${THREADS} = ${TOTAL_CORES} workers"
-    echo "cores        : ${PHYSICAL_CORES} physical, $(nproc) logical (SMT counts twice)"
+    echo "cores        : ${PHYSICAL_CORES} physical, ${LOGICAL_CPUS} logical (SMT counts twice)"
     echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
     echo "container    : ${APPTAINER_CONTAINER:-${SINGULARITY_CONTAINER:-none (native build)}}"
     echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -192,7 +227,7 @@ unset DISPLAY XAUTHORITY
 # generated CTestTestfile.cmake files elsewhere sidesteps that: each one
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
-echo "==================== [1/5] Unit tests (ctest) ============================"
+echo "==================== [1/6] Unit tests (ctest) ============================"
 CTEST_MIRROR="${RESULTS_DIR}/../ctest-run"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
@@ -205,7 +240,7 @@ note_status "${PIPESTATUS[0]}" "unit-tests"
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
-echo "============== [2/5] Benchmark: serial / OpenMP =========================="
+echo "============== [2/6] Benchmark: serial / OpenMP =========================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
 "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS} \
     2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.txt"
@@ -213,7 +248,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-openmp"
 
 # ── Section 3: distributed / hybrid benchmark ───────────────────────────────
 echo ""
-echo "============ [3/5] Benchmark: MPI / hybrid ==============================="
+echo "============ [3/6] Benchmark: MPI / hybrid ==============================="
 export OMP_NUM_THREADS=${THREADS}
 mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
     "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS} \
@@ -225,7 +260,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 # report one strategy: running both in sequence would attribute the broadcast's
 # peak to the scatter too. Hence two launches, identical but for the strategy.
 echo ""
-echo "======== [4/5] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+echo "======== [4/6] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
 MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
 : > "${MEMFILE}"
 export OMP_NUM_THREADS=${THREADS}
@@ -261,27 +296,9 @@ done
 # own "serial (1 rank, 1 thr)" row, which should stay roughly constant across
 # the sweep — if it drifts, the machine was busy and the run is suspect.
 if [ "${SCALING:-1}" != "0" ]; then
-    MAX_WORKERS=${MAX_WORKERS:-}
-    if [ -z "${MAX_WORKERS}" ]; then
-        if [ -n "${SLURM_JOB_ID:-}" ]; then
-            MAX_WORKERS=${TOTAL_CORES}          # what SLURM actually reserved
-        else
-            MAX_WORKERS=${PHYSICAL_CORES}       # what OpenMPI counts as slots
-        fi
-    fi
+    MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
 
-    if [ -z "${SCALING_RANKS:-}" ]; then
-        SCALING_RANKS=""
-        p=1
-        while [ "${p}" -le "${MAX_WORKERS}" ]; do
-            SCALING_RANKS="${SCALING_RANKS} ${p}"
-            p=$(( p * 2 ))
-        done
-        case " ${SCALING_RANKS} " in
-            *" ${MAX_WORKERS} "*) ;;
-            *) SCALING_RANKS="${SCALING_RANKS} ${MAX_WORKERS}" ;;
-        esac
-    fi
+    SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 
     # Each run of the binary reports BOTH decompositions at the rank count it was
     # given: "MPI pure" always uses one thread per rank, "hybrid" uses
@@ -298,7 +315,7 @@ if [ "${SCALING:-1}" != "0" ]; then
     HYBRID_FITS=$(( MAX_WORKERS / SCALING_THREADS ))
 
     echo ""
-    echo "======== [5/5] Strong scaling: ranks =${SCALING_RANKS} ==================="
+    echo "======== [5/6] Strong scaling: ranks =${SCALING_RANKS} ==================="
     SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.txt"
     {
         echo "Strong scaling sweep — fixed problem, increasing ranks"
@@ -327,6 +344,67 @@ if [ "${SCALING:-1}" != "0" ]; then
             ${BENCH_ARGS} "${SCALING_DURATION:-${MEM_DURATION}}" scatter \
             2>&1 | tee -a "${SCALEFILE}"
         note_status "${PIPESTATUS[0]}" "scaling-np${P}"
+    done
+fi
+
+# ── Section 6: OpenMP thread scaling (one process, no MPI) ──────────────────
+# The counterpart of section 5: there the ranks grew, here the threads do, and
+# MPI is out of the picture entirely. Section 2 only ever contrasts 1 thread
+# with all of them, which is two points — not a curve.
+#
+# benchmark_Main re-reads OMP_NUM_THREADS at startup and prints, in the same
+# table, its own single-thread baseline next to the threaded run. Every point of
+# the sweep is therefore self-baselined: no need to divide by a number measured
+# minutes earlier, when the machine may have been under different load.
+#
+# T=1 makes the two rows the same computation, so its "speedup" should read
+# 1.00x. Whatever it reads instead is this machine's noise floor, measured for
+# free — a number worth knowing before trusting any other row in the file.
+if [ "${THREAD_SCALING:-1}" != "0" ]; then
+    SMT_POINT=""
+    if [ -z "${THREAD_LIST:-}" ]; then
+        THREAD_LIST=$(sweep_list "${AVAILABLE_CORES}")
+
+        # One point past the physical cores quantifies what SMT contributes,
+        # which is otherwise easy to mistake for poor scaling. Skipped inside a
+        # SLURM allocation, where the budget is expressed in cores and the extra
+        # threads would land on cores belonging to somebody else.
+        if [ -z "${SLURM_JOB_ID:-}" ] && [ "${LOGICAL_CPUS}" -gt "${AVAILABLE_CORES}" ]; then
+            SMT_POINT=${LOGICAL_CPUS}
+            THREAD_LIST="${THREAD_LIST} ${LOGICAL_CPUS}"
+        fi
+    fi
+
+    echo ""
+    echo "======== [6/6] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
+    THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.txt"
+    {
+        echo "OpenMP thread scaling — one process, no MPI, fixed problem"
+        echo "  machine        : ${PHYSICAL_CORES} physical cores, ${LOGICAL_CPUS} logical"
+        echo "  thread counts  :${THREAD_LIST}"
+        echo "  workload       : ${SCALING_DURATION:-${MEM_DURATION}} s of audio, held fixed"
+        echo "  how to read    : each run prints its own 1-thread baseline, so the"
+        echo "                   speedup column is already the scaling factor;"
+        echo "                   divide by the thread count for the efficiency."
+        [ -n "${SMT_POINT}" ] && \
+        echo "  note           : ${SMT_POINT} threads exceeds the ${PHYSICAL_CORES} physical cores;"
+        [ -n "${SMT_POINT}" ] && \
+        echo "                   that point measures the SMT contribution, not new cores."
+    } > "${THREADFILE}"
+
+    for T in ${THREAD_LIST}; do
+        smt_note=""
+        [ "${T}" -gt "${PHYSICAL_CORES}" ] && smt_note="  [SMT: beyond ${PHYSICAL_CORES} physical cores]"
+        {
+            echo ""
+            echo "════════ OMP_NUM_THREADS=${T}${smt_note}"
+        } | tee -a "${THREADFILE}"
+
+        OMP_NUM_THREADS=${T} \
+            "${BUILD_DIR}/benchmarks/benchmark_Main" \
+            ${BENCH_ARGS} "${SCALING_DURATION:-${MEM_DURATION}}" \
+            2>&1 | tee -a "${THREADFILE}"
+        note_status "${PIPESTATUS[0]}" "threads-${T}"
     done
 fi
 
