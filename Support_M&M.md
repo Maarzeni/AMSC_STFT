@@ -315,3 +315,7 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 - sistemare cose a seguito del commento del prof "Per la parte MPI, distribuire i frame della STFT è una scelta ragionevole. Chiarirei però che, se il segnale viene prima distribuito a tutti i processi, la strategia è adatta a segnali di dimensione moderata, ma non è completamente scalabile in memoria per casi molto grandi.". Possiamo mostrare questo nel codice? possiamo aggiungere questa osservazione nel readme nella sezione "benchmark")
 - i benchmark vengono runnati dal cluster?
 - decidere quali dei numerosi test tenere/presentare/sistemare
+- fare dei grafici per la presentazione
+- mpi vs openmp vs scalar tutte le conmbinazioni (manca mpi vs scalar)
+- "nel readme non fate vedere come scalano le cose"
+
