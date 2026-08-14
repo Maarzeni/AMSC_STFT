@@ -58,11 +58,20 @@ Two parameters control the analysis, and they do very different things.
 └── workflows/
     └── main.yaml              ← GitHub Actions CI pipeline
 
-job.sh                         ← HPC job submission script
-requirements.txt               ← Python dependencies (if any)
+system-deps.txt                ← apt packages for the C++/MPI toolchain
 Singularity.def                ← Container definition for HPC deployment
 
-ft_project/
+scripts/                       ← Everything that RUNS the project
+├── run_suite.sh               ← The benchmark suite: one recipe, every machine
+├── job.sh                     ← SLURM submission (Galileo100), wraps run_suite.sh
+└── job_mox.pbs                ← PBS submission (MOX cluster), same suite
+
+analysis/                      ← Everything that READS the results
+├── parse_results.py           ← Text tables → tidy CSV (standard library only)
+├── plot_results.py            ← CSV → figures for the report (matplotlib)
+└── requirements.txt           ← pip packages for the above (matplotlib)
+
+core/
 │
 ├── CMakeLists.txt
 │
@@ -106,7 +115,9 @@ ft_project/
 │
 ├── tests/
 │   ├── CMakeLists.txt
-│   ├── data/                      ← Audio files used during testing
+│   ├── data/                      ← Audio fixtures. Only test_audio.wav is
+│   │                                 versioned; the rest is generated output
+│   │                                 and stays out of git (see .gitignore)
 │   └── (test source files)
 │
 ├── benchmarks/
@@ -129,13 +140,36 @@ ft_project/
 
 ---
 
+## Dependencies
+
+There are two dependency lists, because the project has two halves that are installed by two different commands. Neither is needed for the recommended path: the container carries the whole C++ toolchain already, and the lists exist for a native build and for the CI.
+
+| File | Installed with | Needed to |
+|---|---|---|
+| `system-deps.txt` | `apt-get` | compile and run the library, the tests and the benchmarks |
+| `analysis/requirements.txt` | `pip` | draw the figures from the measured results |
+
+`system-deps.txt` holds Debian package names — a compiler, CMake, OpenMP and OpenMPI. It is deliberately **not** called `requirements.txt`: that name means "pip packages" to most readers and to GitHub's dependency scanner, and feeding this list to `pip` installs the wrong things. `Singularity.def` and the CI workflow both read it, so the container image and the GitHub runner get the same toolchain by construction.
+
+```bash
+# Native build (skip this entirely if you use the container)
+cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
+
+# Only if you want to regenerate the figures
+python3 -m pip install -r analysis/requirements.txt
+```
+
+`parse_results.py` needs nothing at all — it is standard library on purpose, so the benchmark output can be turned into CSV directly on a cluster, where installing packages is not always possible. Only `plot_results.py` needs matplotlib.
+
+---
+
 ## Build Instructions
 
 The commands below assume they are run **inside the development container** (the same Ubuntu 22.04 environment described by `Singularity.def`), not on the host machine. The container provides the toolchain the project requires: `CMakeLists.txt` declares `find_package(OpenMP REQUIRED)` and `find_package(MPI REQUIRED)`, so configuration aborts on any system where an OpenMP-capable compiler or an MPI installation is missing. Building inside the container also keeps the local build consistent with the CI image and with the cluster deployment.
 
 ```bash
 git clone <repository-url>
-cd ft_project
+cd core
 
 mkdir build
 cd build
@@ -293,7 +327,7 @@ The input footprint now falls as `N/P`, and the measured peak follows it: the li
 
 The same comparison in the development container, at four ranks over ten minutes of audio, shows the block dividing by four as expected: 201.9 MiB of input per rank under the broadcast against 50.5 MiB under the scatter, and a peak of 276.3 MiB against 124.6 MiB on the lightest rank, with the maximum unchanged at 680.6 MiB in both cases. The halo behaves as designed in both settings. In the Galileo100 run the two blocks overlap by exactly 512 samples, `frameSize - hopSize`, while the last 504 samples of the signal are read by no frame at all, so the two blocks together carry 1 323 008 samples against the signal's 1 323 000.
 
-What neither run shows is the case the change is actually about. Two ranks on one node with a thirty-second signal is a scaled-down check: it confirms the model to within two per cent, and it is that agreement which licenses extrapolating the model to a signal that does not fit in the memory of a single node. Demonstrating the latter directly needs the production partition and a considerably longer input; `RANKS="1 2 4 8" DURATION=600 ./benchmarks/run_scaling.sh` on `g100_usr_prod` is the natural next step.
+What neither run shows is the case the change is actually about. Two ranks on one node with a thirty-second signal is a scaled-down check: it confirms the model to within two per cent, and it is that agreement which licenses extrapolating the model to a signal that does not fit in the memory of a single node. Demonstrating the latter directly needs the production partition and a considerably longer input; `SCALING_RANKS="1 2 4 8" SCALING_DURATIONS=600 bash scripts/run_suite.sh` on `g100_usr_prod` is the natural next step.
 
 The gather side is deliberately unchanged, and that is where the remaining ceiling lies. The root rank still allocates the complete `totalFrames × numBins` magnitude matrix. At the default geometry that matrix stores `numBins / hopSize`, or 513/512, doubles for every input sample, which makes it very slightly *larger* than the signal it was computed from: the same hour of audio that occupies 1.27 GB as input yields about 1.27 GB of magnitudes on the root, on top of the signal the root read and the copy `analyze()` takes by value. The bottleneck has therefore moved from the input to the output rather than disappeared, and for a long enough recording it is the output that decides whether the run fits in memory. Removing it would mean not assembling the matrix at all — each rank writing its own range of frames directly through MPI-IO, or streaming block by block into the image exporter — which is beyond the scope of this change. A related limit sits in the same place: `MPI_Scatterv` and `MPI_Gatherv` express their counts and displacements as `int`, so both sides overflow above 2³¹ elements, around 13.5 hours of 44.1 kHz audio at this geometry. That limit is documented in the code rather than worked around.
 
@@ -306,7 +340,7 @@ The repository includes a GitHub Actions workflow defined in `.github/workflows/
 
 The `ci` job runs on an Ubuntu 22.04 runner and automatically:
 
-- installs the required HPC dependencies (CMake, OpenMP, OpenMPI) from `requirements.txt`;
+- installs the required HPC dependencies (CMake, OpenMP, OpenMPI) from `system-deps.txt`;
 - configures the project with CMake and compiles all source files and tests;
 - runs the full test suite via `ctest`;
 - builds a [Singularity](https://apptainer.org/) container image (`amsc_stft.sif`) from `Singularity.def`, which compiles and packages the project in an immutable environment based on Ubuntu 22.04;
@@ -320,13 +354,13 @@ The `cd` job runs only after `ci` completes successfully. It deploys the contain
 
 1. **Downloads** the `amsc_stft.sif` artifact produced by the CI stage.
 2. **Connects** to the Galileo100 login node via SSH, using a private key and certificate stored as GitHub Actions secrets (`HPC_SSH_PRIVATE_KEY`, `HPC_CERT`, `HPC_USERNAME`, `HPC_SCRATCH_PATH`).
-3. **Transfers** the container image and the SLURM job script (`job.sh`) to the cluster scratch directory.
-4. **Submits** the job via `sbatch job.sh`.
+3. **Transfers** the container image and the whole `scripts/` directory to the cluster scratch directory — the job script and the benchmark suite it calls travel together, so they can never arrive out of step.
+4. **Submits** the job via `sbatch scripts/job.sh`.
 
-The SLURM script (`job.sh`) requests 4 CPUs and 2 GB of memory, sets `OMP_NUM_THREADS` from the SLURM allocation, and runs `ctest` inside the container:
+The SLURM script (`scripts/job.sh`) requests 4 CPUs and 2 GB of memory, sets `OMP_NUM_THREADS` from the SLURM allocation, and runs `ctest` inside the container:
 
 ```bash
-singularity exec --pwd /app/AMSC_STFT/ft_project/build amsc_stft.sif ctest --output-on-failure
+singularity exec --pwd /app/AMSC_STFT/core/build amsc_stft.sif ctest --output-on-failure
 ```
 
 Because the binary is compiled inside the immutable container during the CI stage, no build step is required on the cluster: the job runs the pre-built test suite directly.
@@ -441,7 +475,7 @@ The same table settles a design question stated in `STFTAnalyzer.hpp`: whether t
 
 Reading the last row: four OpenMP threads turn 308.7 ms into 77.6, a speedup of 3.98× at 99.5 per cent efficiency; two MPI ranks turn it into 165.1, which is 1.87× at 93 per cent; the two together, on the same four cores, give 87.6 ms, 3.52× at 88 per cent. The ranking holds at every workload and it is the expected one. Threads share the signal and the output buffer and pay only for the fork and join of the parallel region, whereas ranks have to be sent their input and have their results gathered back.
 
-The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). That weakness has since been removed from the tool rather than argued around: `benchmark_MPI_Main` now measures its own serial baseline in the same run, so repeating this campaign yields the comparison inside a single table, and `run_scaling.sh` remains the way to read strong scaling across rank counts.
+The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). That weakness has since been removed from the tool rather than argued around: `benchmark_MPI_Main` now measures its own serial baseline in the same run, so repeating this campaign yields the comparison inside a single table, and the strong-scaling section of `scripts/run_suite.sh` remains the way to read scaling across rank counts.
 
 The practical conclusion for a single node is that MPI does not buy speed there — pure OpenMP is between 4 and 18 per cent faster than the hybrid at equal core count — and that it is not meant to. What the distributed layer buys is the ability to use more than one node and, since the scatter, the ability to hold a signal larger than the memory of one node. On a single node the hybrid configuration is nevertheless the sensible way to run the distributed binary: at 1.85× to 1.90× over pure MPI, the second thread per rank recovers nearly everything the process-level split gives away.
 

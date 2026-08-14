@@ -1,0 +1,78 @@
+# =============================================================================
+# AMSC_STFT — everything that is produced, never authored.
+#
+# The rule of thumb: if a command creates it, it belongs here. Build trees,
+# benchmark output, parsed CSVs, figures and generated audio are all
+# reproducible from the sources, and keeping them out of the repository is what
+# makes a fresh clone small enough to read.
+# =============================================================================
+
+# ── Build trees ──────────────────────────────────────────────────────────────
+build/
+bin/
+lib/
+out/
+.cmake/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# ── Object files, libraries, executables ─────────────────────────────────────
+*.d
+*.slo
+*.lo
+*.o
+*.obj
+*.su
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# ── Benchmark output ─────────────────────────────────────────────────────────
+# run_suite.sh writes results/ ; job_mox.pbs writes results-mox-<jobid>/ ;
+# the CI artifacts unzip as benchmark-results-<machine>/ .
+results/
+results-*/
+benchmark-results*/
+ctest-run/
+tmp/
+
+# SLURM / PBS job logs
+*.out
+*.err
+amsc_stft_job.*
+
+# ── Analysis output ──────────────────────────────────────────────────────────
+# parse_results.py writes csv/ ; plot_results.py writes plots/ .
+csv/
+plots/
+
+# ── Generated media ──────────────────────────────────────────────────────────
+# Spectrograms and the audio the examples and tests synthesise.
+*.ppm
+*.png
+*.mp3
+*.wav
+# ...except the one fixture test_WavReader needs: without it the test does not
+# fail, it silently skips, which is worse. 88 KB is a fair price for that.
+!core/tests/data/test_audio.wav
+
+# ── Containers ───────────────────────────────────────────────────────────────
+*.sif
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Editors and local tooling ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.kdev4
+.DS_Store
+.claude/settings.local.json

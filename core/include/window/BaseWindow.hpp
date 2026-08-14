@@ -54,6 +54,7 @@
 #include <string>     // std::to_string
 #include <numeric>    // std::accumulate, std::inner_product
 #include <concepts>   // std::same_as, std::constructible_from
+#include <algorithm>  // std::clamp
 
 namespace stft {
 

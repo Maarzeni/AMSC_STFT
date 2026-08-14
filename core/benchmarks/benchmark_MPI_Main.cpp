@@ -35,7 +35,8 @@
  * `hop` may be given as 0, meaning frame/2.  `strategy` is `scatter` (default)
  * or `bcast`.  The rank count cannot be varied from inside the program — it is
  * fixed by mpirun at launch — so the strong scaling sweep lives in the
- * companion script run_scaling.sh.
+ * companion script scripts/run_suite.sh, which launches this binary once per
+ * rank count.
  *
  * ─── Why one strategy per process ───────────────────────────────────────────
  * VmHWM is a high-water mark over the whole process lifetime: it never falls,

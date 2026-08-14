@@ -6,6 +6,13 @@
 
 using namespace stft;
 
+// Absolute path baked in by CMake (target_compile_definitions), so the fixture
+// is found no matter which directory ctest is invoked from. A path relative to
+// the working directory silently turned this test into a permanent skip.
+#ifndef TEST_DATA_DIR
+#define TEST_DATA_DIR "../tests/data"
+#endif
+
 // Helper to check if a file exists
 bool fileExists(const std::string& name) {
     std::ifstream f(name.c_str());
@@ -14,10 +21,10 @@ bool fileExists(const std::string& name) {
 
 TEST(WavReaderTest, LoadValidFile) {
 
-    std::string testPath = "../tests/data/test_audio.wav";
+    std::string testPath = std::string(TEST_DATA_DIR) + "/test_audio.wav";
 
     if (!fileExists(testPath)) {
-        GTEST_SKIP() << "test_audio.wav not found in tests/data/";
+        GTEST_SKIP() << "test_audio.wav not found in " << TEST_DATA_DIR;
     }
 
     uint32_t sampleRate = 0;

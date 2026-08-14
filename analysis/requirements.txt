@@ -1,0 +1,13 @@
+# Python dependencies for the analysis stage.
+#
+# Only plot_results.py needs anything: parse_results.py is standard library on
+# purpose, so the text tables can be turned into CSV on the cluster, where
+# installing packages is not always possible.
+#
+#     python3 -m pip install -r analysis/requirements.txt
+#
+# NOTE: system-deps.txt in the repository root is the OTHER dependency list —
+# apt packages for the C++ toolchain, read by Singularity.def and the CI. The
+# two are installed by different commands, which is why they are separate files.
+
+matplotlib>=3.5

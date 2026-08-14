@@ -62,7 +62,7 @@ TOTAL_CORES=$(( SLURM_NTASKS * SLURM_CPUS_PER_TASK ))
 
 # Container paths (binaries were compiled immutably inside the image)
 SIF="amsc_stft.sif"
-BUILD=/app/AMSC_STFT/ft_project/build
+BUILD=/app/AMSC_STFT/core/build
 BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 
 # ── Run the benchmark suite ───────────────────────────────────────────────────
@@ -101,7 +101,7 @@ export SINGULARITYENV_TMPDIR="${TMPWORK}" APPTAINERENV_TMPDIR="${TMPWORK}"
 unset DISPLAY XAUTHORITY
 MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
 
-WAV="${SLURM_SUBMIT_DIR}/ft_project/tests/data/examples_test-audio.wav"
+WAV="${SLURM_SUBMIT_DIR}/core/tests/data/examples_test-audio.wav"
 if [ -f "${WAV}" ]; then
     # Serial/OpenMP example: <stem>_spectrogram.png next to the input WAV
     export OMP_NUM_THREADS=${TOTAL_CORES}
@@ -115,7 +115,7 @@ if [ -f "${WAV}" ]; then
         ${BUILD}/examples/mpi_main "${WAV}"
 else
     echo "WARNING: ${WAV} not found — skipping examples."
-    echo "         Upload ft_project/tests/data/ alongside amsc_stft.sif to enable them."
+    echo "         Upload core/tests/data/ alongside amsc_stft.sif to enable them."
 fi
 
 echo ""

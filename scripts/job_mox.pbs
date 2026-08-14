@@ -61,7 +61,7 @@ echo "mpi      : $(command -v mpirun)"
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}" || exit 1
 
-cmake -S "${PROJECT}/ft_project" -B "${WORKDIR}/build" -DCMAKE_BUILD_TYPE=Release
+cmake -S "${PROJECT}/core" -B "${WORKDIR}/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "${WORKDIR}/build" -j "${NCPUS:-8}"
 if [ ! -x "${WORKDIR}/build/benchmarks/benchmark_Main" ]; then
     echo "ERROR: build failed, nothing to measure" >&2

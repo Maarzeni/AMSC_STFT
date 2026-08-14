@@ -20,12 +20,12 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update -qq
-          cat requirements.txt | grep -v '^#' | xargs sudo apt-get install -y
+          cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
 
       # Step 3: [Build] Configure and compile the C++ project
       - name: Build Project with CMake
         run: |
-          cd ft_project
+          cd core
           mkdir -p build
           cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -34,7 +34,7 @@ jobs:
       # Step 4: [Test] Execute the test suite using CTest
       - name: Run test suite with CTest
         run: |
-          cd ft_project/build
+          cd core/build
           # OMPI_MCA_rmaps_base_oversubscribe=1 allows MPI to run more processes than physical cores
           export OMPI_MCA_rmaps_base_oversubscribe=1
           export OMP_NUM_THREADS=2
@@ -132,11 +132,10 @@ jobs:
           ssh $SSH_OPTS ${REMOTE} \
             "mkdir -p ${REMOTE_PATH}/input && rm -rf ${REMOTE_PATH}/results && mkdir -p ${REMOTE_PATH}/results"
 
-          # Copies the container, SLURM script, and the shared benchmark suite
-          # (job.sh runs scripts/run_suite.sh inside the container, so the
-          # scripts directory has to travel with it)
+          # Copies the container and the scripts directory, which carries both
+          # the SLURM script and the shared benchmark suite it runs inside the
+          # container — one copy, so the two can never arrive out of step.
           scp $SSH_OPTS amsc_stft.sif  ${REMOTE}:${REMOTE_PATH}/
-          scp $SSH_OPTS job.sh             ${REMOTE}:${REMOTE_PATH}/
           scp -r $SSH_OPTS scripts         ${REMOTE}:${REMOTE_PATH}/
 
       # Submits the SLURM job and blocks until it finishes.
@@ -151,7 +150,7 @@ jobs:
         run: |
           ssh $SSH_OPTS \
             ${{ secrets.HPC_USERNAME }}@login.g100.cineca.it \
-            "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch --wait job.sh"
+            "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch --wait scripts/job.sh"
 
       # Brings the benchmark output back from the cluster.
       # `always()` so that a failed or timed-out job still yields its logs —

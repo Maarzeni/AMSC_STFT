@@ -20,7 +20,7 @@
 # ─── Knobs (all optional, all environment variables) ────────────────────────
 #
 #   BUILD_DIR    where the compiled binaries live. Auto-detected: the in-image
-#                path when running inside the container, else ft_project/build.
+#                path when running inside the container, else core/build.
 #   RESULTS_DIR  where result files are written.        default ./results
 #   PREFIX       file name prefix, i.e. which machine.  auto: cluster/github/local
 #   RANKS        MPI ranks.                default SLURM_NTASKS, else 2
@@ -56,13 +56,13 @@ set -uo pipefail
 # Inside the container the project lives at a fixed absolute path baked in at
 # build time; outside, it sits next to this script.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IN_IMAGE_BUILD=/app/AMSC_STFT/ft_project/build
+IN_IMAGE_BUILD=/app/AMSC_STFT/core/build
 
 if [ -z "${BUILD_DIR:-}" ]; then
     if [ -d "${IN_IMAGE_BUILD}" ]; then
         BUILD_DIR="${IN_IMAGE_BUILD}"
     else
-        BUILD_DIR="${REPO_ROOT}/ft_project/build"
+        BUILD_DIR="${REPO_ROOT}/core/build"
     fi
 fi
 

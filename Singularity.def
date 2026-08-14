@@ -11,7 +11,7 @@ From: ubuntu:22.04
     export LC_ALL=C
     export OMPI_MCA_rmaps_base_oversubscribe=1
     # Add the build binaries to the system PATH so they can be run directly
-    export PATH=/app/AMSC_STFT/ft_project/build/examples:/app/AMSC_STFT/ft_project/build/benchmarks:$PATH
+    export PATH=/app/AMSC_STFT/core/build/examples:/app/AMSC_STFT/core/build/benchmarks:$PATH
 
 %post
     # Prevent timezone/keyboard interactive dialogs during apt-get
@@ -19,10 +19,10 @@ From: ubuntu:22.04
 
     # Install C++ toolchain, CMake, OpenMP, and MPI
     apt-get update -qq
-    cat /requirements.txt | grep -v '^#' | xargs apt-get install -y
+    cat /system-deps.txt | grep -v '^#' | xargs apt-get install -y
 
     # Build the project inside the container immutably
-    cd /app/AMSC_STFT/ft_project
+    cd /app/AMSC_STFT/core
     rm -rf build 
     mkdir -p build
     cd build
@@ -30,12 +30,12 @@ From: ubuntu:22.04
     make -j$(nproc)
 
 %files
-    # Copy the entire ft_project directory into the container
-    ft_project /app/AMSC_STFT/ft_project
-    requirements.txt /requirements.txt
+    # Copy the entire core directory into the container
+    core /app/AMSC_STFT/core
+    system-deps.txt /system-deps.txt
 
 %runscript
     # Default execution when running `apptainer run amsc_stft.sif`
     # We execute the main executable, passing any arguments forwarded by the user.
     # Replace "main" with the actual name of your compiled target if different.
-    exec /app/AMSC_STFT/ft_project/build/examples/main "$@"
+    exec /app/AMSC_STFT/core/build/examples/main "$@"
