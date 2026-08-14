@@ -6,34 +6,35 @@ AMSC_STFT is a C++ library for spectral analysis of audio signals, built around 
 
 ---
 
-## Mathematical Background
+## What the library computes
 
-### The Fourier Transform and Its Limitation
-
-The Discrete Fourier Transform (DFT) decomposes a finite signal into its constituent frequencies. Given a signal $x[n]$ of length $N$, the DFT is defined as:
-
-$$X[k] = \sum_{n=0}^{N-1} x[n] \cdot e^{-i 2\pi k n / N}, \quad k = 0, 1, \ldots, N-1$$
-
-While the DFT reveals which frequencies are present in a signal, it provides no information about *when* those frequencies occur. For stationary signals this is acceptable, but for audio — where frequency content changes over time — a purely spectral representation is insufficient.
-
-### The Short-Time Fourier Transform
-
-The Short-Time Fourier Transform addresses this limitation by analyzing the signal locally in time. The signal is divided into short, overlapping segments (frames), a window function is applied to each frame to reduce spectral leakage, and a DFT is computed on each windowed segment:
+The Discrete Fourier Transform tells you *which* frequencies a signal contains, but not *when* they occur — a limitation that makes it unusable for audio, whose spectral content changes continuously. The Short-Time Fourier Transform removes it by applying the DFT locally: the signal is split into short overlapping frames, each frame is multiplied by a window function that suppresses spectral leakage, and a DFT is computed on the result.
 
 $$X[m, k] = \sum_{n=0}^{L-1} x[n + mH] \cdot w[n] \cdot e^{-i 2\pi k n / L}$$
 
-where $L$ is the frame length, $H$ is the hop size (controlling the overlap between consecutive frames), $w[n]$ is the window function, and $m$ is the frame index.
+Here $L$ is the frame length, $H$ the hop size (the shift between consecutive frames, hence their overlap), $w[n]$ the window and $m$ the frame index. The output is a time-frequency matrix — one row per instant, one column per frequency band — whose magnitudes are exported as a spectrogram image.
 
-The result is a two-dimensional time-frequency representation: each column corresponds to a point in time, and each row to a frequency bin.
+Two parameters control the analysis, and they do very different things.
 
-First of all the audio signal is split into overlapping frames of fixed length. The overlap between consecutive frames is controlled by the hop size $H$, typically set to $L/2$ or $L/4$. Then each frame is multiplied element-wise by a window function before applying the FFT. This reduces spectral leakage caused by the implicit discontinuities at frame boundaries. 
+**The frame length $L$ sets both resolutions at once, in opposite directions.** A frame lasts $L/f_s$ seconds, and the STFT produces a single spectrum for the whole frame — so anything that happens inside it cannot be located more precisely than that. At the same time, the DFT of $L$ points produces bins that are $f_s/L$ Hz apart, and two tones closer than that fall into the same bin. Since $L$ sits on top in one formula and underneath in the other, their product is always 1: you cannot improve both. Choosing $L$ only decides how the fixed budget is split between time and frequency.
 
-The project supports three window types:
-   - **Hann** — good general-purpose choice; effectively eliminates edge discontinuities.
-   - **Hamming** — similar to Hann but with a slightly higher sidelobe floor.
-   - **Blackman** — wider main lobe but very low sidelobes; useful when high frequency selectivity is needed.
+| $L$ | Time resolution | Frequency resolution |
+|---|---|---|
+| 256 | 5.8 ms | 172 Hz |
+| 1024 (default) | 23.2 ms | 43.1 Hz |
+| 4096 | 92.9 ms | 10.8 Hz |
 
-The windowed frame is transformed into the frequency domain using one of the available FFT implementations. Finally the magnitude (or log-magnitude) of each frame's FFT output is assembled into a 2D matrix, which can be exported as an image.
+**The hop size $H$ changes neither.** A smaller hop does not make the frames shorter — it just takes more of them, overlapping. What $H$ controls is coverage and cost. With $H = L$ the frames only touch, and the window fades out whatever falls near their edges; with $H = L/2$ (the default) every instant lands inside some frame. The price is linear: since the frame count is $M = 1 + \lfloor (N - L)/H \rfloor$, halving the hop doubles the number of frames, the number of FFTs to compute, and the size of the output matrix.
+
+### Three things to know before running it
+
+- **The frame size must be a power of two.** All three FFT implementations are radix-2 Cooley-Tukey, which requires it. A frame size that is not a power of two is rejected: `main.cpp` exits with an error message, and `STFTAnalyzer` throws `std::invalid_argument` at construction. The hop size has no such constraint.
+
+- **Three windows are available**, selected with the fourth command-line argument: `hann` (the default, a good general-purpose choice), `hamming` (narrower main lobe, suited to speech), `blackman` (lowest sidelobes, for precision spectral analysis).
+
+- **The output has `frameSize / 2 + 1` columns, not `frameSize`.** The input is real, so the upper half of the spectrum is redundant and is not stored. The retained bins run from DC to Nyquist, and bin $k$ sits at frequency $k \cdot f_s / L$ — use `SpectrogramData::binFrequency(k)` rather than computing it by hand. Magnitudes are normalised by $L \cdot \text{coherentGain}(w)$, so values are comparable across frame sizes and window choices.
+
+> Section 1 of the project reportcovers the reasoning behind all of this: the time-frequency uncertainty relation, where spectral leakage comes from, how the three windows trade off against each other, why half the spectrum suffices, and how the normalisation is derived.
 
 ---
 
