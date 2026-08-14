@@ -109,7 +109,7 @@ SUITE_STATUS=$?
 # /scratch_local is node-local and swept after 30 days, so anything worth having
 # must be copied back before the job ends. The job id keeps runs from
 # overwriting each other.
-DEST="${PROJECT}/results-mox-${PBS_JOBID%%.*}"
+DEST="${PROJECT}/results/raw/mox-${PBS_JOBID%%.*}"
 mkdir -p "${DEST}"
 cp -r "${RESULTS_DIR}/." "${DEST}/" && echo "results copied to ${DEST}"
 ls -1 "${DEST}" | sed 's/^/  /'

@@ -21,7 +21,7 @@
 #
 #   BUILD_DIR    where the compiled binaries live. Auto-detected: the in-image
 #                path when running inside the container, else core/build.
-#   RESULTS_DIR  where result files are written.        default ./results
+#   RESULTS_DIR  where result files are written.    default ./results/raw
 #   PREFIX       file name prefix, i.e. which machine.  auto: cluster/github/local
 #   RANKS        MPI ranks.                default SLURM_NTASKS, else 2
 #   THREADS      OpenMP threads per rank.   default SLURM_CPUS_PER_TASK, else 2
@@ -155,7 +155,7 @@ elif [ -n "${PBS_JOBID:-}" ]; then
     [ -n "${NCPUS:-}" ] && [ "${NCPUS}" -gt "${BATCH_CORES:-0}" ] && BATCH_CORES=${NCPUS}
 fi
 
-RESULTS_DIR=${RESULTS_DIR:-${PWD}/results}
+RESULTS_DIR=${RESULTS_DIR:-${PWD}/results/raw}
 RANKS=${RANKS:-${SLURM_NTASKS:-2}}
 THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-2}}
 BENCH_ARGS=${BENCH_ARGS:-"7 2 1024 512"}

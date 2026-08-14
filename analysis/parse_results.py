@@ -6,9 +6,9 @@ downstream (plots, tables in the report) reads the CSV instead, so a change to
 the C++ printing costs one fix here rather than a silent misreading everywhere.
 
 Usage:
-    python3 analysis/parse_results.py results/ [more_dirs...] -o csv/
+    python3 analysis/parse_results.py results/raw/*/ -o results/csv/
 
-Writes csv/timings.csv and csv/memory.csv, both in long ("tidy") form: one
+Writes results/csv/timings.csv and memory.csv, both in long ("tidy") form: one
 measurement per row, machine included, so several runs can be concatenated and
 plotted on the same axes.
 
@@ -238,8 +238,8 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dirs", nargs="+", type=Path,
                     help="directories holding <machine>_*.txt result files")
-    ap.add_argument("-o", "--out", type=Path, default=Path("csv"),
-                    help="output directory (default: csv/)")
+    ap.add_argument("-o", "--out", type=Path, default=Path("results/csv"),
+                    help="output directory (default: results/csv/)")
     args = ap.parse_args()
 
     timings: list = []

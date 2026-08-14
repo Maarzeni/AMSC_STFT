@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Parallel-performance figures for the AMSC_STFT report.
 
-Reads only csv/timings.csv and csv/memory.csv — never the text tables — so a
+Reads only results/csv/timings.csv and memory.csv — never the text tables — so a
 change to the C++ printing is absorbed by parse_results.py and never reaches a
 figure.
 
-    python3 analysis/parse_results.py results/ -o csv/
-    python3 analysis/plot_results.py --csv csv/ --out plots/
+    python3 analysis/parse_results.py results/raw/*/ -o results/csv/
+    python3 analysis/plot_results.py --csv results/csv/ --out results/figures/
 
   1  fft_algorithms  FFT algorithms as OpenMP threads grow — time AND speedup
   2  stft_openmp     STFT on OpenMP alone (1 MPI rank), speedup
@@ -480,8 +480,8 @@ def fig_weak(rows, machine, stat, out, formats):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv", type=Path, default=Path("csv"))
-    ap.add_argument("--out", type=Path, default=Path("plots"))
+    ap.add_argument("--csv", type=Path, default=Path("results/csv"))
+    ap.add_argument("--out", type=Path, default=Path("results/figures"))
     ap.add_argument("--machine", action="append", default=None)
     ap.add_argument("--stat", default="min", choices=["min", "median", "mean"])
     ap.add_argument("--only", default=None,
