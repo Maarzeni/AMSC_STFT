@@ -32,7 +32,8 @@
 #   MAX_WORKERS    largest rank count in the sweep. default: the SLURM
 #                  allocation, or the machine's physical cores
 #   SCALING_RANKS  explicit rank list, e.g. "1 2 4 8", overriding MAX_WORKERS
-#   SCALING_DURATION seconds of audio held fixed across the sweep. default 30
+#   SCALING_DURATIONS seconds of audio to sweep at, one curve each.
+#                  default "5 15 60"; SCALING_DURATION (singular) forces one
 #   SCALING_THREADS  threads/rank for the hybrid row of the rank sweep. default 2
 #
 #   THREAD_SCALING set to 0 to skip the OpenMP thread sweep.  default on
@@ -156,6 +157,10 @@ RANKS=${RANKS:-${SLURM_NTASKS:-2}}
 THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-2}}
 BENCH_ARGS=${BENCH_ARGS:-"7 2 1024 512"}
 MEM_DURATION=${MEM_DURATION:-30}
+# One curve per duration in the scaling figures: how the parallel gain grows with
+# the problem is the behaviour Amdahl's law predicts, and a single duration
+# cannot show it. SCALING_DURATION (singular) still forces a single curve.
+SCALING_DURATIONS=${SCALING_DURATIONS:-${SCALING_DURATION:-"5 15 60"}}
 TOTAL_CORES=$(( RANKS * THREADS ))
 
 mkdir -p "${RESULTS_DIR}"
@@ -222,6 +227,19 @@ fi
 # container print "No protocol specified" over the results. Purely cosmetic.
 unset DISPLAY XAUTHORITY
 
+# How many cores the sweeps may actually use, and the rank list they walk. Under
+# a scheduler this is the ALLOCATION, not what lscpu reports: on a login node
+# lscpu sees every core of the machine while the job holds a handful, and a sweep
+# sized on the former would trample the other users. Settled once here because
+# both the memory comparison and the scaling sweep need it.
+if [ -n "${BATCH_CORES}" ] && [ "${BATCH_CORES}" -gt 0 ]; then
+    AVAILABLE_CORES=${BATCH_CORES}
+else
+    AVAILABLE_CORES=${PHYSICAL_CORES}
+fi
+MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
+SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
+
 # ── Section 0: what machine produced these numbers ──────────────────────────
 # PHYSICAL_CORES was computed with the MPI settings above; it is printed here
 # because nproc counts hardware threads, and a 2-core machine with SMT reports
@@ -284,19 +302,24 @@ MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
 : > "${MEMFILE}"
 export OMP_NUM_THREADS=${THREADS}
 
-for STRATEGY in bcast scatter; do
-    {
-        echo ""
-        echo "════════════════ distribution: ${STRATEGY} ════════════════"
-    } | tee -a "${MEMFILE}"
+# Both strategies at every rank count of the sweep. Measuring the broadcast at a
+# single rank count would leave its curve as one point, and the whole claim —
+# that the scatter's per-rank footprint falls as 1/P while the broadcast's does
+# not — is a statement about how the two behave AS P GROWS.
+MEM_RANKS=${MEM_RANKS:-${SCALING_RANKS:-${RANKS}}}
+for P in ${MEM_RANKS}; do
+    for STRATEGY in bcast scatter; do
+        {
+            echo ""
+            echo "════════════════ -np ${P} · distribution: ${STRATEGY} ════════════════"
+        } | tee -a "${MEMFILE}"
 
-    # ${BENCH_ARGS} ${MEM_DURATION} <strategy> reuses the sweep's repetitions
-    # and geometry, so the distribution is the only difference between the two.
-    mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
-        "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-        ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}" \
-        2>&1 | tee -a "${MEMFILE}"
-    note_status "${PIPESTATUS[0]}" "memory-${STRATEGY}"
+        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+            ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}" \
+            2>&1 | tee -a "${MEMFILE}"
+        note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
+    done
 done
 
 # ── Section 5: strong scaling ───────────────────────────────────────────────
@@ -315,10 +338,6 @@ done
 # own "serial (1 rank, 1 thr)" row, which should stay roughly constant across
 # the sweep — if it drifts, the machine was busy and the run is suspect.
 if [ "${SCALING:-1}" != "0" ]; then
-    MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
-
-    SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
-
     # Each run of the binary reports BOTH decompositions at the rank count it was
     # given: "MPI pure" always uses one thread per rank, "hybrid" uses
     # OMP_NUM_THREADS of them. Leaving that at 1 makes the two rows identical and
@@ -341,28 +360,30 @@ if [ "${SCALING:-1}" != "0" ]; then
         echo "  machine        : ${PHYSICAL_CORES} physical cores, ${MAX_WORKERS} usable"
         echo "  rank counts    :${SCALING_RANKS}"
         echo "  threads/rank   : 1 (MPI pure row) and ${SCALING_THREADS} (hybrid row)"
-        echo "  workload       : ${SCALING_DURATION:-${MEM_DURATION}} s of audio, held fixed"
+        echo "  workloads      :${SCALING_DURATIONS} s of audio (one curve each)"
         echo "  honest up to   : ${HYBRID_FITS} ranks for the hybrid row,"
         echo "                   ${MAX_WORKERS} ranks for the MPI pure row;"
         echo "                   beyond that the workers exceed the cores."
     } > "${SCALEFILE}"
 
+    for DURATION in ${SCALING_DURATIONS}; do
     for P in ${SCALING_RANKS}; do
         hybrid_workers=$(( P * SCALING_THREADS ))
         fit_note=""
         [ "${hybrid_workers}" -gt "${MAX_WORKERS}" ] && fit_note="  [hybrid oversubscribed]"
         {
             echo ""
-            echo "════════ -np ${P}: pure ${P}x1 = ${P} workers, hybrid ${P}x${SCALING_THREADS} = ${hybrid_workers} workers${fit_note}"
+            echo "════════ ${DURATION}s · -np ${P}: pure ${P}x1 = ${P} workers, hybrid ${P}x${SCALING_THREADS} = ${hybrid_workers} workers${fit_note}"
         } | tee -a "${SCALEFILE}"
 
         # Fixed problem size across the sweep — that is what makes it STRONG
         # scaling — and the same repetitions and geometry as every other section.
         mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${SCALING_DURATION:-${MEM_DURATION}}" scatter \
+            ${BENCH_ARGS} "${DURATION}" scatter \
             2>&1 | tee -a "${SCALEFILE}"
-        note_status "${PIPESTATUS[0]}" "scaling-np${P}"
+        note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
+    done
     done
 fi
 
@@ -401,7 +422,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
         echo "OpenMP thread scaling — one process, no MPI, fixed problem"
         echo "  machine        : ${PHYSICAL_CORES} physical cores, ${LOGICAL_CPUS} logical"
         echo "  thread counts  :${THREAD_LIST}"
-        echo "  workload       : ${SCALING_DURATION:-${MEM_DURATION}} s of audio, held fixed"
+        echo "  workloads      :${SCALING_DURATIONS} s of audio (one curve each)"
         echo "  how to read    : each run prints its own 1-thread baseline, so the"
         echo "                   speedup column is already the scaling factor;"
         echo "                   divide by the thread count for the efficiency."
@@ -411,19 +432,21 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
         echo "                   that point measures the SMT contribution, not new cores."
     } > "${THREADFILE}"
 
+    for DURATION in ${SCALING_DURATIONS}; do
     for T in ${THREAD_LIST}; do
         smt_note=""
         [ "${T}" -gt "${PHYSICAL_CORES}" ] && smt_note="  [SMT: beyond ${PHYSICAL_CORES} physical cores]"
         {
             echo ""
-            echo "════════ OMP_NUM_THREADS=${T}${smt_note}"
+            echo "════════ ${DURATION}s · OMP_NUM_THREADS=${T}${smt_note}"
         } | tee -a "${THREADFILE}"
 
         OMP_NUM_THREADS=${T} \
             "${BUILD_DIR}/benchmarks/benchmark_Main" \
-            ${BENCH_ARGS} "${SCALING_DURATION:-${MEM_DURATION}}" \
+            ${BENCH_ARGS} "${DURATION}" \
             2>&1 | tee -a "${THREADFILE}"
-        note_status "${PIPESTATUS[0]}" "threads-${T}"
+        note_status "${PIPESTATUS[0]}" "threads-${T}-${DURATION}s"
+    done
     done
 fi
 

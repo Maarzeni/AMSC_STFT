@@ -74,7 +74,7 @@ fi
 # not by itself stop a program from using more, so for a scaling study the limit
 # has to be enforced by the code — which is what the suite does.
 #
-# 15 repetitions and 60 s of audio instead of the 7/30 defaults: a compute node
+# 15 repetitions and up to 60 s of audio instead of the 7/30 defaults: a compute node
 # is quiet enough to deserve the extra statistics, and longer runs make a stray
 # interruption a smaller fraction of each measurement.
 # "mox-cpu" (the queue name), not plain "mox": the earlier login-node runs are
@@ -84,7 +84,10 @@ export PREFIX=mox-cpu
 export BUILD_DIR="${WORKDIR}/build"
 export RESULTS_DIR="${WORKDIR}/results"
 export BENCH_ARGS="15 3 1024 512"
-export SCALING_DURATION=60
+# Three workloads, one curve each in the scaling figures: whether the parallel
+# gain grows with the problem is the question those plots exist to answer, and a
+# single duration draws a single line that cannot answer it.
+export SCALING_DURATIONS="5 15 60"
 export MEM_DURATION=60
 
 bash "${PROJECT}/scripts/run_suite.sh"
