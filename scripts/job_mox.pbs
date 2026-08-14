@@ -16,15 +16,16 @@
 
 #PBS -N amsc_stft
 #PBS -q cpu
-#PBS -l select=1:ncpus=32:mpiprocs=32
-#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=28:mpiprocs=28
+#PBS -l walltime=06:00:00
 #PBS -j oe
 
-## Resources: one node, 32 hardware threads, all usable as MPI slots. The CPU
-## nodes carry 112 threads each, so raising ncpus is possible — check the queue
-## limits first with `qstat -Qf cpu`, and keep ncpus == mpiprocs so the rank
-## sweep can reach the full allocation. Walltime is generous on purpose: the
-## whole suite takes ~15 minutes, and a job killed at the limit loses everything.
+## Resources: one node, 28 hardware threads, all usable as MPI slots.
+## 28 is the ceiling, not a choice: `qstat -Qf cpu` reports resources_max.ncpus
+## = 28, so a larger request is refused however idle the 112-thread nodes look.
+## Walltime, by contrast, is cheap — the queue allows 48 h — so it is set well
+## above the ~1 h the dense sweeps need: a job killed at the limit loses every
+## measurement it had already taken.
 
 set -uo pipefail
 
@@ -84,11 +85,22 @@ export PREFIX=mox-cpu
 export BUILD_DIR="${WORKDIR}/build"
 export RESULTS_DIR="${WORKDIR}/results"
 export BENCH_ARGS="15 3 1024 512"
-# Three workloads, one curve each in the scaling figures: whether the parallel
-# gain grows with the problem is the question those plots exist to answer, and a
-# single duration draws a single line that cannot answer it.
-export SCALING_DURATIONS="5 15 60"
-export MEM_DURATION=60
+# Every rank count up to the ceiling, not just powers of two: the interesting
+# part of a scaling curve is where it bends away from ideal, and powers of two
+# step straight over it. 14 points cost more runs but read as a curve.
+export SCALING_RANKS="1 2 4 6 8 10 12 14 16 18 20 22 24 28"
+export THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 28"
+
+# Four workloads spanning two orders of magnitude, the longest at five minutes
+# of audio (~25 800 frames). Short ones expose the fixed overhead, long ones
+# show what the implementation can do when the work per worker is generous.
+export SCALING_DURATIONS="5 30 120 300"
+export MEM_DURATION=120
+
+# Weak scaling: 10 s of audio per rank, so 28 ranks process 280 s. Constant work
+# per rank is the complement of the strong-scaling sweeps and the second half of
+# what a scaling study is expected to report.
+export WEAK_BASE=10
 
 bash "${PROJECT}/scripts/run_suite.sh"
 SUITE_STATUS=$?

@@ -36,6 +36,9 @@
 #                  default "5 15 60"; SCALING_DURATION (singular) forces one
 #   SCALING_THREADS  threads/rank for the hybrid row of the rank sweep. default 2
 #
+#   WEAK_SCALING   set to 0 to skip the weak-scaling sweep.   default on
+#   WEAK_BASE      seconds of audio PER RANK in that sweep.    default 5
+#
 #   THREAD_SCALING set to 0 to skip the OpenMP thread sweep.  default on
 #   THREAD_LIST    explicit thread list, e.g. "1 2 4 8"; default: powers of two
 #                  up to the physical cores, plus one SMT point if there is one
@@ -264,7 +267,7 @@ SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 # generated CTestTestfile.cmake files elsewhere sidesteps that: each one
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
-echo "==================== [1/6] Unit tests (ctest) ============================"
+echo "==================== [1/7] Unit tests (ctest) ============================"
 CTEST_MIRROR="${RESULTS_DIR}/../ctest-run"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
@@ -277,7 +280,7 @@ note_status "${PIPESTATUS[0]}" "unit-tests"
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
-echo "============== [2/6] Benchmark: serial / OpenMP =========================="
+echo "============== [2/7] Benchmark: serial / OpenMP =========================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
 "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS} \
     2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.txt"
@@ -285,7 +288,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-openmp"
 
 # ── Section 3: distributed / hybrid benchmark ───────────────────────────────
 echo ""
-echo "============ [3/6] Benchmark: MPI / hybrid ==============================="
+echo "============ [3/7] Benchmark: MPI / hybrid ==============================="
 export OMP_NUM_THREADS=${THREADS}
 mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
     "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS} \
@@ -297,7 +300,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 # report one strategy: running both in sequence would attribute the broadcast's
 # peak to the scatter too. Hence two launches, identical but for the strategy.
 echo ""
-echo "======== [4/6] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+echo "======== [4/7] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
 MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
 : > "${MEMFILE}"
 export OMP_NUM_THREADS=${THREADS}
@@ -353,7 +356,7 @@ if [ "${SCALING:-1}" != "0" ]; then
     HYBRID_FITS=$(( MAX_WORKERS / SCALING_THREADS ))
 
     echo ""
-    echo "======== [5/6] Strong scaling: ranks =${SCALING_RANKS} ==================="
+    echo "======== [5/7] Strong scaling: ranks =${SCALING_RANKS} ==================="
     SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.txt"
     {
         echo "Strong scaling sweep — fixed problem, increasing ranks"
@@ -416,7 +419,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
     fi
 
     echo ""
-    echo "======== [6/6] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
+    echo "======== [6/7] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
     THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.txt"
     {
         echo "OpenMP thread scaling — one process, no MPI, fixed problem"
@@ -447,6 +450,46 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
             2>&1 | tee -a "${THREADFILE}"
         note_status "${PIPESTATUS[0]}" "threads-${T}-${DURATION}s"
     done
+    done
+fi
+
+# ── Section 7: weak scaling ─────────────────────────────────────────────────
+# Strong scaling asks "does a FIXED problem finish sooner on more workers".
+# Weak scaling asks the complementary question — "can a PROPORTIONALLY larger
+# problem be solved in the same time" — by growing the audio with the rank
+# count, so the work per rank stays constant. A perfect implementation draws a
+# flat line; whatever slope appears is the communication and the serial part.
+#
+# Both matter for a report: strong scaling is bounded by Amdahl, weak scaling by
+# Gustafson, and an implementation can look good under one and poor under the
+# other.
+if [ "${WEAK_SCALING:-1}" != "0" ]; then
+    WEAK_BASE=${WEAK_BASE:-5}          # seconds of audio per rank
+    echo ""
+    echo "======== [7/7] Weak scaling: ${WEAK_BASE}s of audio per rank ============="
+    WEAKFILE="${RESULTS_DIR}/${PREFIX}_weak_scaling.txt"
+    {
+        echo "Weak scaling sweep — audio grows with the rank count"
+        echo "  per-rank load  : ${WEAK_BASE} s of audio, held constant"
+        echo "  rank counts    :${SCALING_RANKS}"
+        echo "  threads/rank   : 1"
+        echo "  how to read    : the execution time should stay FLAT; the slope"
+        echo "                   that appears is communication plus serial work."
+    } > "${WEAKFILE}"
+    export OMP_NUM_THREADS=1
+
+    for P in ${SCALING_RANKS}; do
+        DUR=$(( WEAK_BASE * P ))
+        {
+            echo ""
+            echo "════════ weak · -np ${P} · ${DUR}s of audio (${WEAK_BASE}s per rank)"
+        } | tee -a "${WEAKFILE}"
+
+        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+            ${BENCH_ARGS} "${DUR}" scatter \
+            2>&1 | tee -a "${WEAKFILE}"
+        note_status "${PIPESTATUS[0]}" "weak-np${P}"
     done
 fi
 
