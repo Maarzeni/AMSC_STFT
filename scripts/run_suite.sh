@@ -130,9 +130,25 @@ sweep_list() {  # sweep_list <max>
 # gets mistaken for — a cluster run.
 if [ -z "${PREFIX:-}" ]; then
     if   [ -n "${SLURM_JOB_ID:-}" ];    then PREFIX=cluster
+    elif [ -n "${PBS_JOBID:-}" ];       then PREFIX=cluster
     elif [ -n "${GITHUB_ACTIONS:-}" ];  then PREFIX=github
     else                                     PREFIX=local
     fi
+fi
+
+# A batch job is the only place where lscpu lies about what we may use: it
+# describes the whole node while the scheduler handed us a slice of it. Both
+# schedulers are asked what they actually reserved.
+BATCH_CORES=""
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    BATCH_CORES=$(( ${SLURM_NTASKS:-1} * ${SLURM_CPUS_PER_TASK:-1} ))
+elif [ -n "${PBS_JOBID:-}" ]; then
+    # PBS exports NCPUS for the chunk; PBS_NODEFILE has one line per MPI slot,
+    # which is the better answer when both are present and disagree.
+    if [ -r "${PBS_NODEFILE:-/nonexistent}" ]; then
+        BATCH_CORES=$(wc -l < "${PBS_NODEFILE}")
+    fi
+    [ -n "${NCPUS:-}" ] && [ "${NCPUS}" -gt "${BATCH_CORES:-0}" ] && BATCH_CORES=${NCPUS}
 fi
 
 RESULTS_DIR=${RESULTS_DIR:-${PWD}/results}
@@ -155,10 +171,13 @@ if ! touch "${TMPDIR:-/tmp}/.amsc_write_test" 2>/dev/null; then
     export TMPDIR="${RESULTS_DIR}/../tmp"
     mkdir -p "${TMPDIR}"
     echo "note: default TMPDIR not writable, using ${TMPDIR}"
+    # Only passed when the fallback was actually needed: the parameter is an
+    # OpenMPI 4 name (OpenMPI 5 renamed ORTE to PRRTE), so handing it to a
+    # newer mpirun for no reason invites a complaint we do not need.
+    MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca orte_tmpdir_base ${TMPDIR}"
 else
     rm -f "${TMPDIR:-/tmp}/.amsc_write_test"
 fi
-MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca orte_tmpdir_base ${TMPDIR:-/tmp}"
 
 # Inside a container, OpenMPI's shared-memory path tries Cross Memory Attach
 # (process_vm_readv), which needs ptrace privileges the container lacks: every
@@ -186,8 +205,8 @@ LOGICAL_CPUS=$(nproc)
 # How many cores the sweeps may actually use. Under SLURM this is the allocation,
 # NOT what lscpu reports: on a login node lscpu sees all 48 cores of the machine
 # while the job holds 4, and a sweep sized on 48 would trample the other users.
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-    AVAILABLE_CORES=${TOTAL_CORES}
+if [ -n "${BATCH_CORES}" ] && [ "${BATCH_CORES}" -gt 0 ]; then
+    AVAILABLE_CORES=${BATCH_CORES}
 else
     AVAILABLE_CORES=${PHYSICAL_CORES}
 fi
@@ -209,9 +228,9 @@ unset DISPLAY XAUTHORITY
 # 4. Reading a 2x speedup as poor scaling "on 4 cores" is the single easiest
 # way to misread these tables.
 {
-    echo "environment  : ${PREFIX}${SLURM_JOB_ID:+ (SLURM job ${SLURM_JOB_ID})}"
+    echo "environment  : ${PREFIX}${SLURM_JOB_ID:+ (SLURM job ${SLURM_JOB_ID})}${PBS_JOBID:+ (PBS job ${PBS_JOBID})}"
     echo "node         : $(hostname)"
-    echo "partition    : ${SLURM_JOB_PARTITION:-n/a (not a batch job)}"
+    echo "partition    : ${SLURM_JOB_PARTITION:-${PBS_QUEUE:-n/a (not a batch job)}}"
     echo "ranks x thr  : ${RANKS} x ${THREADS} = ${TOTAL_CORES} workers"
     echo "cores        : ${PHYSICAL_CORES} physical, ${LOGICAL_CPUS} logical (SMT counts twice)"
     echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
@@ -369,7 +388,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
         # which is otherwise easy to mistake for poor scaling. Skipped inside a
         # SLURM allocation, where the budget is expressed in cores and the extra
         # threads would land on cores belonging to somebody else.
-        if [ -z "${SLURM_JOB_ID:-}" ] && [ "${LOGICAL_CPUS}" -gt "${AVAILABLE_CORES}" ]; then
+        if [ -z "${BATCH_CORES}" ] && [ "${LOGICAL_CPUS}" -gt "${AVAILABLE_CORES}" ]; then
             SMT_POINT=${LOGICAL_CPUS}
             THREAD_LIST="${THREAD_LIST} ${LOGICAL_CPUS}"
         fi
