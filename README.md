@@ -43,7 +43,7 @@ Two parameters control the analysis, and they do very different things.
 - **Multiple FFT implementations**: recursive (Cooley-Tukey), iterative (in-place bit-reversal), and parallel (OpenMP-accelerated).
 - **Windowing functions**: Hann, Hamming, and Blackman, each following a common interface.
 - **STFT analysis**: parallelized with OpenMP for shared-memory systems.
-- **Distributed STFT**: MPI-based implementation that distributes frames across processes, with optional hybrid OpenMP parallelism within each process. (??AAAAAA???)
+- **Distributed STFT**: MPI-based implementation that distributes frames across processes, sending each rank only the samples its own frames read, with optional hybrid OpenMP parallelism within each process.
 - **WAV file I/O**: loading and decoding of mono WAV audio files.
 - **Spectrogram export**: generation and export of the time-frequency matrix as an image.
 - **Benchmark suite**: systematic performance comparison across FFT variants, window functions, and thread/process counts.
@@ -78,7 +78,6 @@ core/
 ├── include/
 │   ├── audio/
 │   │   ├── AudioFile.h            ← External dependency
-│   │   ├── AudioBuffer.hpp        ← Custom wrapper for AudioFile
 │   │   └── WavReader.hpp          ← Header-only WAV reader
 │   │
 │   ├── fft/
@@ -127,6 +126,7 @@ core/
 │   └── benchmark_MPI_Main.cpp     ← Distributed benchmark entry point
 │
 └── examples/
+    ├── CMakeLists.txt
     ├── main.cpp                   ← End-to-end pipeline demonstration
     ├── mpi_main.cpp               ← MPI pipeline demonstration
     └── data/                      ← Example audio files
