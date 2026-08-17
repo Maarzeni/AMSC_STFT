@@ -205,9 +205,10 @@ TEST_F(STFTAnalyzerTest, MultiToneSignalPeaksAtAllExpectedBins) {
         for (int c = 0; c < 3; ++c)
             if (b + 3 >= kToneBins[c] && b <= kToneBins[c] + 3) nearTone = true;
 
-        if (!nearTone)
+        if (!nearTone) {
             EXPECT_LT(spec.at(mid, b), kFloorTol)
                 << "unexpected energy at bin " << b;
+        }
     }
 }
 
@@ -305,8 +306,17 @@ TEST(SpectrogramDataTest, AtThrowsOutOfRange) {
     SpectrogramData s;
     s.numFrames = 2; s.numBins = 4;
     s.magnitudes.resize(8, 1.0);
+    // at() is [[nodiscard]]; EXPECT_THROW only cares whether the call throws
+    // and intentionally discards the (never-reached) return value.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
     EXPECT_THROW(s.at(2, 0), std::out_of_range);
     EXPECT_THROW(s.at(0, 4), std::out_of_range);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 }
 
 TEST(SpectrogramDataTest, BinFrequencyAndFrameTime) {

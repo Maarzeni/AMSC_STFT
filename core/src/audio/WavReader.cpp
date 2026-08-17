@@ -1,5 +1,18 @@
 #include "audio/WavReader.hpp"
+
+// AudioFile.h is a vendored third-party header (not our code to edit); its
+// AIFF decoder reinterpret_casts an int32_t as a float, which trips
+// -Wstrict-aliasing under -O3. Silenced locally, around this one include site,
+// rather than for the whole project.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#endif
 #include "audio/AudioFile.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #include <stdexcept>
 
 namespace stft {
