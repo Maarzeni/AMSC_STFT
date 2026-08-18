@@ -117,10 +117,9 @@ core/
 │
 ├── tests/
 │   ├── CMakeLists.txt
-│   ├── data/                      ← Audio fixtures. Only test_audio.wav is
-│   │                                 versioned; the rest is generated output
-│   │                                 and stays out of git (see .gitignore)
-│   └── (test source files)
+│   └── (test source files)       ← All fixtures are synthesised in memory,
+│                                    except the WAV test_WavReader reads from
+│                                    examples/data/
 │
 ├── benchmarks/
 │   ├── CMakeLists.txt
@@ -130,8 +129,19 @@ core/
 │
 └── examples/
     ├── CMakeLists.txt
-    ├── main.cpp                   ← End-to-end pipeline demonstration
-    └── mpi_main.cpp               ← MPI pipeline demonstration
+    ├── main.cpp                   ← Shared-memory pipeline (OpenMP)
+    ├── mpi_main.cpp               ← The same pipeline, distributed (MPI)
+    └── data/                      ← The audio the examples analyse. Both files
+        ├── test_audio.wav            are versioned (the blanket *.wav rule in
+        └── scale.wav                 .gitignore is negated for them); the
+                                      first is also test_WavReader's fixture
+
+results/                           ← Everything a run writes. Not in git.
+├── raw/                           ← run_suite.sh output, one file per topic
+├── csv/                           ← parse_results.py output
+├── figures/                       ← plot_results.py output
+└── results_examples/              ← the spectrograms the two examples in
+                                      core/examples/ write
 ```
 
 ## Getting Started
@@ -172,7 +182,7 @@ The example programs, the tests and the benchmark binaries are all run from `cor
 | Program | Path | What it does |
 |---|---|---|
 | `main` | `examples/main` | WAV → spectrogram PNG, OpenMP |
-| `mpi_main` | `examples/mpi_main` | the same pipeline, distributed over MPI ranks |
+| `mpi_main` | `examples/mpi_main` | the same pipeline and the same output, distributed over MPI ranks |
 | `benchmark_Main` | `benchmarks/benchmark_Main` | serial and OpenMP timings |
 | `benchmark_MPI_Main` | `benchmarks/benchmark_MPI_Main` | MPI and hybrid timings |
 | `test_*` | `tests/test_*` | the GoogleTest executables, also registered with CTest |
@@ -193,54 +203,79 @@ python3 -m pip install -r analysis/requirements.txt   # matplotlib
 
 ## Running the Example Programs
 
-The library ships two demonstration programs. `main` is the complete pipeline on a single machine: it reads a WAV file, computes the STFT and writes the spectrogram as a PNG. `mpi_main` is the same analysis distributed over MPI processes, and prints its result to the terminal instead of writing an image.
+The library ships two demonstration programs, and they are deliberately the same program twice. `main` runs the pipeline on one machine, with the frame loop parallelised by OpenMP; `mpi_main` runs it across MPI processes, each of which still uses OpenMP inside. Both read a WAV file, compute the STFT, write the spectrogram as a PNG and print the same report. The two source files are written to be read side by side: same arguments, same helpers in the same order, same output — the real difference is `STFTAnalyzer` against `MPI_STFTAnalyzer`.
 
-The repository contains one audio file, `core/tests/data/test_audio.wav`, which the commands below use — any mono WAV works in its place.
-
-### `main` — WAV to spectrogram
+### The command line, identical for both
 
 ```
-./examples/main <audio.wav> [frameSize=1024] [hopSize=512] [window=hann|hamming|blackman]
+./examples/main                    [audio.wav] [frameSize=1024] [hopSize=512] [window=hann|hamming|blackman]
+mpirun -np <P> ./examples/mpi_main [audio.wav] [frameSize=1024] [hopSize=512] [window=hann|hamming|blackman]
 ```
 
-The WAV path is required, the rest is optional. `frameSize` must be a power of two. The image is written next to the input file, as `<input>_spectrogram.png`.
+Every argument is optional:
+
+- **`audio.wav`** — a path, or a bare file name, which is looked up in `core/examples/data/`. That directory holds the two versioned audio files, `test_audio.wav` (1 second, 44.1 kHz mono, a 440 Hz tone) and `scale.wav` (2 seconds, same format); any mono WAV works in their place. With no argument at all, `test_audio.wav` is analysed. If the file cannot be read, both programs fall back to a 2-second synthetic 440 + 880 + 1760 Hz signal rather than exiting, so they always have something to run on.
+- **`frameSize`** — must be a power of two, or the program stops with an error.
+- **`hopSize`** — any value ≥ 1.
+- **`window`** — `hann`, `hamming` or `blackman`.
+
+### Where the output goes
+
+Both programs write their PNG into `results/results_examples/`, alongside the benchmark output under `results/`:
+
+```
+results/results_examples/
+├── test_audio_hann_f1024_h512_serial.png    ← from main
+└── test_audio_hann_f1024_h512_mpi4.png      ← the same analysis, from mpi_main on 4 ranks
+```
+
+The name carries the parameters — `<input>_<window>_f<frameSize>_h<hopSize>_<serial|mpi P>` — so runs with different settings accumulate side by side instead of overwriting each other, and the serial and distributed results of the same analysis sit next to each other for comparison.
+
+Everything else is printed to the terminal: sample rate, duration, frame and hop, window, the frame and bin counts, the time and frequency resolutions they imply, the dominant frequency of the middle frame and the wall time of the analysis.
+
+The destination is `$STFT_EXAMPLES_DIR` if it is set, otherwise the repository path baked in at build time; if that is not writable — the source tree inside the Singularity image is read-only — the programs fall back to `./results/results_examples` relative to the current directory.
+
+### `main` — shared memory
 
 ```bash
 cd core/build
 
-# Defaults: 1024-sample frames, 50 % overlap, Hann window
-./examples/main ../tests/data/test_audio.wav
-# → core/tests/data/test_audio_spectrogram.png
+# No arguments: the bundled test_audio.wav, 1024-sample frames, 50 % overlap, Hann
+./examples/main
+
+# A bare name is looked up in core/examples/data/
+./examples/main scale.wav
 
 # Finer frequency resolution and a different window
-./examples/main ../tests/data/test_audio.wav 2048 512 hamming
+./examples/main scale.wav 2048 512 hamming
 
 # The frame loop is parallelised with OpenMP
-OMP_NUM_THREADS=4 ./examples/main ../tests/data/test_audio.wav
+OMP_NUM_THREADS=4 ./examples/main ../examples/data/test_audio.wav
+
+# Somewhere else entirely
+STFT_EXAMPLES_DIR=/tmp/spectrograms ./examples/main
 ```
 
-### `mpi_main` — distributed analysis
+### `mpi_main` — distributed
 
-```
-mpirun -np <P> ./examples/mpi_main [audio.wav]
-```
-
-The WAV path is the only argument; frame size 1024, hop 512 and the Hann window are fixed in the program. Given no argument — or a file it cannot read — it analyses a 2-second synthetic signal instead, so it always has something to run on. It prints the spectrogram dimensions, the first bins of the first frame and the number of ranks used; it does not write a PNG.
+The same commands with `mpirun` in front. The frames are block-distributed over the ranks and the root rank gathers the full spectrogram, so it is the one that writes the PNG and prints the report.
 
 ```bash
 cd core/build
 
-# Pure MPI
-mpirun -np 4 ./examples/mpi_main ../tests/data/test_audio.wav
+# Pure MPI: one thread per rank
+mpirun -np 4 ./examples/mpi_main test_audio.wav
 
 # Hybrid: MPI across processes, OpenMP inside each one
-OMP_NUM_THREADS=4 mpirun -np 2 ./examples/mpi_main ../tests/data/test_audio.wav
+OMP_NUM_THREADS=4 mpirun -np 2 ./examples/mpi_main test_audio.wav 2048 512 hamming
 
-# No input file: built-in synthetic signal
+# No input file: the bundled fixture again
 mpirun -np 4 ./examples/mpi_main
 ```
 
 Add `--oversubscribe` if you ask for more ranks than the machine has cores.
+
+Running the two on the same input is the quickest end-to-end check that the distributed path is correct: the frame count, the bin count and the dominant frequency the two print must match, and the two PNGs are identical files.
 
 ---
 

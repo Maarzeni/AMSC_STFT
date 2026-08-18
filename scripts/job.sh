@@ -86,13 +86,15 @@ singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \
     bash "${SLURM_SUBMIT_DIR}/scripts/run_suite.sh"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Examples: WAV → spectrogram PNG (output written next to the host WAV)
+# Examples: WAV → spectrogram PNG
 # ══════════════════════════════════════════════════════════════════════════════
-# Not part of the measured suite: these read a WAV from the HOST and write a PNG
-# back to it, so they belong to the cluster deployment rather than to the
-# benchmarks. They do need the same two MPI workarounds the suite applies
-# internally — a writable TMPDIR for the ORTE session directory, and no Cross
-# Memory Attach inside the container.
+# Not part of the measured suite: these read a WAV from the HOST and write their
+# PNG back to the HOST, so they belong to the cluster deployment rather than to
+# the benchmarks. STFT_EXAMPLES_DIR is what sends the output to the submit
+# directory instead of the container's own read-only source tree.
+# They do need the same two MPI workarounds the suite applies internally — a
+# writable TMPDIR for the ORTE session directory, and no Cross Memory Attach
+# inside the container.
 echo ""
 echo "==================== Examples (STFT spectrograms) ========================"
 TMPWORK="${SLURM_SUBMIT_DIR}/tmp"
@@ -101,21 +103,26 @@ export SINGULARITYENV_TMPDIR="${TMPWORK}" APPTAINERENV_TMPDIR="${TMPWORK}"
 unset DISPLAY XAUTHORITY
 MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
 
-WAV="${SLURM_SUBMIT_DIR}/core/tests/data/examples_test-audio.wav"
+EXAMPLES_OUT="${RESULTS}/results_examples"
+mkdir -p "${EXAMPLES_OUT}"
+export SINGULARITYENV_STFT_EXAMPLES_DIR="${EXAMPLES_OUT}"
+export APPTAINERENV_STFT_EXAMPLES_DIR="${EXAMPLES_OUT}"
+
+WAV="${SLURM_SUBMIT_DIR}/core/examples/data/test_audio.wav"
 if [ -f "${WAV}" ]; then
-    # Serial/OpenMP example: <stem>_spectrogram.png next to the input WAV
+    # Shared-memory example: PNG into ${EXAMPLES_OUT}
     export OMP_NUM_THREADS=${TOTAL_CORES}
     singularity exec ${BIND} ${SIF} ${BUILD}/examples/main "${WAV}" 1024 512 hann
 
-    # Distributed example on the same WAV
+    # Distributed example on the same WAV, same parameters, same destination
     export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
     singularity exec ${BIND} ${SIF} \
         mpirun --bind-to none -np ${SLURM_NTASKS} \
         ${MCA_OPTS} \
-        ${BUILD}/examples/mpi_main "${WAV}"
+        ${BUILD}/examples/mpi_main "${WAV}" 1024 512 hann
 else
     echo "WARNING: ${WAV} not found — skipping examples."
-    echo "         Upload core/tests/data/ alongside amsc_stft.sif to enable them."
+    echo "         Upload core/examples/data/ alongside amsc_stft.sif to enable them."
 fi
 
 echo ""

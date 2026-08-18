@@ -28,6 +28,11 @@ std::vector<double> WavReader::load(const std::string& filename,
 
     AudioFile<double> audioFile;
 
+    // AudioFile prints its own message to stdout on failure, which would appear
+    // before — and alongside — the exception below. One diagnostic per failure:
+    // ours, which names the file and travels with the error.
+    audioFile.shouldLogErrorsToConsole(false);
+
     if (!audioFile.load(filename)) {
         throw std::runtime_error("Failed to load WAV file: " + filename);
     }

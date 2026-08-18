@@ -138,6 +138,12 @@ jobs:
           scp $SSH_OPTS amsc_stft.sif  ${REMOTE}:${REMOTE_PATH}/
           scp -r $SSH_OPTS scripts         ${REMOTE}:${REMOTE_PATH}/
 
+          # The audio the examples analyse. job.sh looks for it at
+          # core/examples/data/test_audio.wav and skips the examples without it,
+          # so the tree it expects is recreated here.
+          ssh $SSH_OPTS ${REMOTE} "mkdir -p ${REMOTE_PATH}/core/examples"
+          scp -r $SSH_OPTS core/examples/data ${REMOTE}:${REMOTE_PATH}/core/examples/
+
       # Submits the SLURM job and blocks until it finishes.
       # --wait is what makes the results retrievable: without it sbatch returns
       # as soon as the job is queued, the workflow ends, and there is nothing to

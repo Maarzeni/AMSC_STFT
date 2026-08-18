@@ -33,9 +33,10 @@ compile_commands.json
 
 # ── Everything a run produces ────────────────────────────────────────────────
 # One tree, so one rule covers it:
-#     results/raw/      the text tables from run_suite.sh and the CI artifacts
-#     results/csv/      parse_results.py output
-#     results/figures/  plot_results.py output
+#     results/raw/               the text tables from run_suite.sh and the CI artifacts
+#     results/csv/               parse_results.py output
+#     results/figures/           plot_results.py output
+#     results/results_examples/  the spectrograms and summaries the examples write
 results/
 ctest-run/
 tmp/
@@ -58,9 +59,11 @@ amsc_stft_job.*
 *.png
 *.mp3
 *.wav
-# ...except the one fixture test_WavReader needs: without it the test does not
-# fail, it silently skips, which is worse. 88 KB is a fair price for that.
-!core/tests/data/test_audio.wav
+# ...except the two audio files under core/examples/data/. They are inputs, not
+# output: the examples analyse them, and test_WavReader reads test_audio.wav —
+# without it that test does not fail, it silently skips, which is worse.
+!core/examples/data/test_audio.wav
+!core/examples/data/scale.wav
 
 # ── Containers ───────────────────────────────────────────────────────────────
 *.sif

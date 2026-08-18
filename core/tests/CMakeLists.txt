@@ -16,9 +16,11 @@ FetchContent_MakeAvailable(googletest)
 add_executable(test_WavReader test_WavReader.cpp)
 # Link the test to the main library (amsc_stft_core) and Google Test
 target_link_libraries(test_WavReader PRIVATE amsc_stft_core GTest::gtest_main)
-# Absolute path to the fixtures: ctest runs the binary from the build tree, so a
-# path relative to the working directory would never resolve.
-target_compile_definitions(test_WavReader PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+# The audio fixtures live with the examples, which are their main consumer; this
+# test is the only one that reads one of them.  Absolute path because ctest runs
+# the binary from the build tree, so a path relative to the working directory
+# would never resolve.
+target_compile_definitions(test_WavReader PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../examples/data")
 # Register the test with the CMake testing system
 add_test(NAME WavReaderTest COMMAND test_WavReader)
 
@@ -31,7 +33,6 @@ add_test(NAME BaseFFTTest COMMAND test_BaseFFT)
 # Recursive FFT Test
 add_executable(test_RecursiveFFT test_RecursiveFFT.cpp)
 target_link_libraries(test_RecursiveFFT PRIVATE amsc_stft_core GTest::gtest_main)
-target_compile_definitions(test_RecursiveFFT PRIVATE TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME RecursiveFFTTest COMMAND test_RecursiveFFT)
 
 # Iterative FFT Test
