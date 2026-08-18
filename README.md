@@ -255,11 +255,11 @@ ctest -N                     # list the tests without running them
 
 ### Running a single test
 
-`-R` filters by name with a regular expression; anchoring avoids partial matches. `-V` prints the full GoogleTest output instead of showing it only on failure.
+`-R` selects the tests whose name contains what you pass it. `-V` prints the full GoogleTest output instead of showing it only on failure.
 
 ```bash
-ctest -R '^STFTAnalyzerTest$' --output-on-failure
-ctest -R 'MPISTFTTest' --output-on-failure     # all four rank counts
+ctest -R STFTAnalyzerTest --output-on-failure
+ctest -R MPISTFTTest --output-on-failure     # all four rank counts
 ```
 
 Each test is also a standalone executable under `tests/`, which gives access to the GoogleTest flags:
@@ -278,7 +278,7 @@ The CTest names (`STFTAnalyzerTest`) and the GoogleTest suite names inside the s
 ctest -j4 --output-on-failure
 
 # More cores to one test (ParallelFFTTest and STFTAnalyzerTest use OpenMP)
-OMP_NUM_THREADS=4 ctest -R '^STFTAnalyzerTest$' --output-on-failure
+OMP_NUM_THREADS=4 ctest -R STFTAnalyzerTest --output-on-failure
 OMP_NUM_THREADS=4 ./tests/test_STFTAnalyzer
 
 # A rank count other than the registered 1, 2, 3 and 4

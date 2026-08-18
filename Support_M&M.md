@@ -309,5 +309,8 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 ```
 
 ## TO DO
-- decidere quali dei numerosi test tenere/presentare/sistemare
 
+- decidere quali dei numerosi test tenere/presentare/sistemare
+- analisi di stft+fft_parallel vs stft+fft_iterative
+- sistemare i requirements in modo che siano user friendly
+- ficcare scale.wav in core/tests/data/, e togliela dai .gitignore
