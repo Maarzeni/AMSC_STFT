@@ -34,7 +34,7 @@ Two parameters control the analysis, and they do very different things.
 
 - **The output has `frameSize / 2 + 1` columns, not `frameSize`.** The input is real, so the upper half of the spectrum is redundant and is not stored. The retained bins run from DC to Nyquist, and bin $k$ sits at frequency $k \cdot f_s / L$ — use `SpectrogramData::binFrequency(k)` rather than computing it by hand. Magnitudes are normalised by $L \cdot \text{coherentGain}(w)$, so values are comparable across frame sizes and window choices.
 
-> Section 1 of the project reportcovers the reasoning behind all of this: the time-frequency uncertainty relation, where spectral leakage comes from, how the three windows trade off against each other, why half the spectrum suffices, and how the normalisation is derived.
+> Section 1 of the project report covers the reasoning behind all of this: the time-frequency uncertainty relation, where spectral leakage comes from, how the three windows trade off against each other, why half the spectrum suffices, and how the normalisation is derived.
 
 ---
 
@@ -92,6 +92,9 @@ core/
 │   │   ├── HammingWindow.hpp
 │   │   └── BlackmanWindow.hpp
 │   │
+│   ├── mpi/
+│   │   └── MPIContext.hpp         ← RAII wrapper for MPI_Init / MPI_Finalize
+│   │
 │   ├── stft/
 │   │   ├── STFTAnalyzer.hpp       ← Shared-memory STFT (OpenMP)
 │   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI)
@@ -128,209 +131,277 @@ core/
 └── examples/
     ├── CMakeLists.txt
     ├── main.cpp                   ← End-to-end pipeline demonstration
-    ├── mpi_main.cpp               ← MPI pipeline demonstration
-    └── data/                      ← Example audio files
+    └── mpi_main.cpp               ← MPI pipeline demonstration
 ```
 
----
+## Getting Started
 
-## Design & Architecture Notes
+### Requirements
 
-<!-- To be completed -->
+| Requirement | Notes |
+|---|---|
+| C++20 compiler | GCC 11+ or Clang 14+ |
+| CMake ≥ 3.20 | |
+| OpenMP | `find_package(OpenMP REQUIRED)` — configuration fails without it |
+| MPI | `find_package(MPI REQUIRED)` — OpenMPI is what we use |
+| Network access on first configure | GoogleTest v1.14.0 is fetched from GitHub by `FetchContent` |
 
----
-
-## Dependencies
-
-There are two dependency lists, because the project has two halves that are installed by two different commands. Neither is needed for the recommended path: the container carries the whole C++ toolchain already, and the lists exist for a native build and for the CI.
-
-| File | Installed with | Needed to |
-|---|---|---|
-| `system-deps.txt` | `apt-get` | compile and run the library, the tests and the benchmarks |
-| `analysis/requirements.txt` | `pip` | draw the figures from the measured results |
-
-`system-deps.txt` holds Debian package names — a compiler, CMake, OpenMP and OpenMPI. It is deliberately **not** called `requirements.txt`: that name means "pip packages" to most readers and to GitHub's dependency scanner, and feeding this list to `pip` installs the wrong things. `Singularity.def` and the CI workflow both read it, so the container image and the GitHub runner get the same toolchain by construction.
+The instructions below assume you are working **inside a Docker container that already provides this toolchain** — a Linux image with a C++20 compiler, CMake, OpenMP and an MPI implementation installed. Once such a container exists, entering it is a single command:
 
 ```bash
-# Native build (skip this entirely if you use the container)
+docker start -ai <container-name>
+```
+
+If you prefer to build directly on your machine, the Debian/Ubuntu package names are listed in `system-deps.txt`:
+
+```bash
 cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
-
-# Only if you want to regenerate the figures
-python3 -m pip install -r analysis/requirements.txt
 ```
 
-`parse_results.py` needs nothing at all — it is standard library on purpose, so the benchmark output can be turned into CSV directly on a cluster, where installing packages is not always possible. Only `plot_results.py` needs matplotlib.
+### Build
 
----
-
-## Build Instructions
-
-The commands below assume they are run **inside the development container** (the same Ubuntu 22.04 environment described by `Singularity.def`), not on the host machine. The container provides the toolchain the project requires: `CMakeLists.txt` declares `find_package(OpenMP REQUIRED)` and `find_package(MPI REQUIRED)`, so configuration aborts on any system where an OpenMP-capable compiler or an MPI installation is missing. Building inside the container also keeps the local build consistent with the CI image and with the cluster deployment.
+From the root of the repository:
 
 ```bash
-git clone <repository-url>
 cd core
-
-mkdir build
-cd build
-
+mkdir build && cd build
 cmake ..
 make -j
 ```
 
-The build produces the `amsc_stft_core` static library. OpenMP is enabled automatically if the compiler supports it. A `compile_commands.json` file is generated in the build directory for IDE and tooling support.
+### What gets built
+
+The example programs, the tests and the benchmark binaries are all run from `core/build/`; the scripts under `scripts/` and `analysis/` are run from the repository root.
+
+| Program | Path | What it does |
+|---|---|---|
+| `main` | `examples/main` | WAV → spectrogram PNG, OpenMP |
+| `mpi_main` | `examples/mpi_main` | the same pipeline, distributed over MPI ranks |
+| `benchmark_Main` | `benchmarks/benchmark_Main` | serial and OpenMP timings |
+| `benchmark_MPI_Main` | `benchmarks/benchmark_MPI_Main` | MPI and hybrid timings |
+| `test_*` | `tests/test_*` | the GoogleTest executables, also registered with CTest |
+
+The build also produces the `amsc_stft_core` and `amsc_stft_mpi` static libraries and a `compile_commands.json` for IDE support.
+
+### Optional: the analysis scripts
+
+Only needed to turn benchmark output into figures:
+
+```bash
+python3 -m pip install -r analysis/requirements.txt   # matplotlib
+```
+
+`analysis/parse_results.py` uses the standard library only and needs no installation.
 
 ---
 
-## Running Tests
+## Running the Example Programs
 
-The project includes an automated test suite built with GoogleTest. Tests cover all major components of the library:
+The library ships two demonstration programs. `main` is the complete pipeline on a single machine: it reads a WAV file, computes the STFT and writes the spectrogram as a PNG. `mpi_main` is the same analysis distributed over MPI processes, and prints its result to the terminal instead of writing an image.
 
-- audio file loading and decoding
-- all three FFT implementations (recursive, iterative, parallel)
-- window functions (Hann, Hamming, Blackman)
-- STFT analysis
-- spectrogram output and image export
-- MPI distributed components
+The repository contains one audio file, `core/tests/data/test_audio.wav`, which the commands below use — any mono WAV works in its place.
 
-To run the full test suite from the build directory:
+### `main` — WAV to spectrogram
+
+```
+./examples/main <audio.wav> [frameSize=1024] [hopSize=512] [window=hann|hamming|blackman]
+```
+
+The WAV path is required, the rest is optional. `frameSize` must be a power of two. The image is written next to the input file, as `<input>_spectrogram.png`.
 
 ```bash
-ctest --output-on-failure
+cd core/build
+
+# Defaults: 1024-sample frames, 50 % overlap, Hann window
+./examples/main ../tests/data/test_audio.wav
+# → core/tests/data/test_audio_spectrogram.png
+
+# Finer frequency resolution and a different window
+./examples/main ../tests/data/test_audio.wav 2048 512 hamming
+
+# The frame loop is parallelised with OpenMP
+OMP_NUM_THREADS=4 ./examples/main ../tests/data/test_audio.wav
+```
+
+### `mpi_main` — distributed analysis
+
+```
+mpirun -np <P> ./examples/mpi_main [audio.wav]
+```
+
+The WAV path is the only argument; frame size 1024, hop 512 and the Hann window are fixed in the program. Given no argument — or a file it cannot read — it analyses a 2-second synthetic signal instead, so it always has something to run on. It prints the spectrogram dimensions, the first bins of the first frame and the number of ranks used; it does not write a PNG.
+
+```bash
+cd core/build
+
+# Pure MPI
+mpirun -np 4 ./examples/mpi_main ../tests/data/test_audio.wav
+
+# Hybrid: MPI across processes, OpenMP inside each one
+OMP_NUM_THREADS=4 mpirun -np 2 ./examples/mpi_main ../tests/data/test_audio.wav
+
+# No input file: built-in synthetic signal
+mpirun -np 4 ./examples/mpi_main
+```
+
+Add `--oversubscribe` if you ask for more ranks than the machine has cores.
+
+---
+
+## Running the Tests
+
+The project ships a GoogleTest suite registered with CTest. From `core/build`:
+
+```bash
+ctest --output-on-failure    # run everything
+ctest -N                     # list the tests without running them
 ```
 
 ### Running a single test
 
-The `-R` option filters tests by name, using a regular expression. Anchoring the pattern avoids partial matches:
+`-R` filters by name with a regular expression; anchoring avoids partial matches. `-V` prints the full GoogleTest output instead of showing it only on failure.
 
 ```bash
 ctest -R '^STFTAnalyzerTest$' --output-on-failure
+ctest -R 'MPISTFTTest' --output-on-failure     # all four rank counts
 ```
 
-`ctest -N` lists the registered tests without executing them, and `-V` prints the full GoogleTest output instead of showing it only on failure. Each test is also a standalone executable under `build/tests/`, which can be run directly to access the GoogleTest command-line flags:
+Each test is also a standalone executable under `tests/`, which gives access to the GoogleTest flags:
 
 ```bash
 ./tests/test_STFTAnalyzer --gtest_list_tests
 ./tests/test_STFTAnalyzer --gtest_filter='STFTAnalyzerTemplateTest.*'
 ```
 
-Note that the CTest name (`STFTAnalyzerTest`) and the GoogleTest suite names defined inside the source file (`NumFramesTest`, `STFTAnalyzerConstructionTest`, `SpectrogramDataTest`, …) are independent: the former is used with `ctest -R`, the latter with `--gtest_filter`.
+The CTest names (`STFTAnalyzerTest`) and the GoogleTest suite names inside the sources (`NumFramesTest`, `SpectrogramDataTest`, …) are independent: the first go with `ctest -R`, the second with `--gtest_filter`.
 
 ### Running tests in parallel
 
-Two distinct forms of parallelism apply here, and they are controlled separately.
-
-**Running several tests at once.** The `-j` option tells CTest how many *test cases* to execute concurrently. It shortens the wall time of the whole suite, but gives no additional core to any individual test:
-
 ```bash
+# Several test cases at once
 ctest -j4 --output-on-failure
-```
 
-**Giving more cores to one test.** The tests that exercise the shared-memory implementations (`ParallelFFTTest`, `STFTAnalyzerTest`) are parallelised internally with OpenMP, so their thread count comes from the `OMP_NUM_THREADS` environment variable:
-
-```bash
+# More cores to one test (ParallelFFTTest and STFTAnalyzerTest use OpenMP)
 OMP_NUM_THREADS=4 ctest -R '^STFTAnalyzerTest$' --output-on-failure
 OMP_NUM_THREADS=4 ./tests/test_STFTAnalyzer
+
+# A rank count other than the registered 1, 2, 3 and 4
+mpirun -n 6 --oversubscribe ./tests/test_MPI_STFTAnalyzer
 ```
 
-The two options can be combined, but the product of the two must stay within the available cores: `ctest -j4` with `OMP_NUM_THREADS=4` requests up to sixteen threads and will oversubscribe a four-core machine, making the run slower rather than faster.
-
-**The distributed test.** `MPISTFTTest` is registered with a fixed number of two processes, since the process count is written into the `add_test` command in `tests/CMakeLists.txt`. Running it through CTest therefore always uses two ranks; a different configuration requires invoking `mpirun` on the executable directly:
-
-```bash
-mpirun -n 4 --oversubscribe ./tests/test_MPI_STFTAnalyzer
-OMP_NUM_THREADS=2 mpirun -n 2 --oversubscribe ./tests/test_MPI_STFTAnalyzer
-```
-
-Finally, keep in mind that these are correctness tests running on small signals: raising the thread or process count is meant to verify that the results remain correct as the configuration changes, not to obtain a speed-up. Thread creation overhead dominates at this size. Actual performance measurements belong to the benchmark suite described below.
+Keep `-j` times `OMP_NUM_THREADS` within the available cores: `ctest -j4` with `OMP_NUM_THREADS=4` asks for sixteen threads and will slow a four-core machine down rather than speed it up.
 
 ---
 
-## Main Tests Description
+## Benchmarks
 
-### Numerical validation of the FFT
+The `benchmarks/` directory measures the execution time of the FFT engines and of the STFT under each parallelisation strategy. There are two executables — one for the shared-memory side, one for the distributed side — and a script that runs both in a fixed configuration and writes the results to disk.
 
-The correctness of the fast transforms is validated at several levels:
+### Serial / OpenMP benchmarks
 
-- **Analytical reference cases** (`test_RecursiveFFT`, `test_IterativeFFT`): known input/output pairs such as the Dirac impulse $[1,0,0,0] \rightarrow [1,1,1,1]$ and a constant (DC) signal, whose transform is known in closed form.
-- **Forward/inverse round-trip**: a multi-frequency synthetic signal is transformed and then inverse-transformed; the reconstruction must match the original within `1e-9`, verifying that `forward` and `inverse` are mutually consistent.
-- **Direct DFT comparison** (`test_DFTReference`): on small sizes ($N = 4, 8, 16$) the output of `RecursiveFFT` and `IterativeFFT` is compared element-by-element against a naive $O(N^2)$ Discrete Fourier Transform,
+Compares the FFT engines (`RecursiveFFT`, `IterativeFFT`, `ParallelFFT`) and the serial against the OpenMP STFT.
 
-$$X[k] = \sum_{n=0}^{N-1} x[n] \cdot e^{-i 2\pi k n / N},$$
+```
+./benchmarks/benchmark_Main [reps=7] [warmup=2] [frame=1024] [hop=frame/2] [seconds]
+```
 
-  computed directly from the definition. The direct DFT is trivially correct by construction and independent of the divide-and-conquer / bit-reversal logic, so it provides an authoritative reference for the fast implementations (both forward and the normalized inverse). The same test also cross-checks the recursive and iterative engines against each other.
-
-### Time-frequency validation
-
-- **Synthetic signals with known frequencies** (`test_STFTAnalyzer`): a bin-aligned sinusoid produces its spectral peak at the expected frequency bin, and a DC signal concentrates its energy in bin 0, confirming that framing, windowing and the FFT are wired together correctly.
-- **Multi-tone analysis** (`test_STFTAnalyzer`): a signal built as the sum of three bin-aligned sinusoids with distinct amplitudes ($k = 8, 32, 96$ — i.e. $\approx 344$, $1378$ and $4134$ Hz at 44.1 kHz, with amplitudes $1.0$, $0.6$, $0.3$) is used to verify simultaneously that
-  - all three peaks appear at the expected bins as strict local maxima, with the remaining bins essentially silent;
-  - the recovered magnitude matches the expected amplitude. With the normalization applied by the analyzer — division by $\text{frameSize} \cdot \text{coherentGain} = \sum_n w[n]$ — a real sinusoid of amplitude $A$ yields a one-sided peak of $A/2$;
-  - the *relative* amplitudes between components are preserved, so windowing and normalization do not distort the spectral balance;
-  - the peaks are stable across every frame, as expected for a stationary signal;
-  - the peak bins map back to the correct physical frequencies via `binFrequency()`.
-
-### Structural and parallel tests
-
-- **Window functions** (`test_HannWindow`, `test_HammingWindow`, `test_BlackmanWindow`): coefficient values and symmetry properties.
-- **C++20 concept validation** (`test_BaseFFT`): compile-time check that each FFT engine satisfies the `IsFFT` concept.
-- **Distributed STFT** (`test_MPI_STFTAnalyzer`): the MPI result is checked for consistency with the serial `STFTAnalyzer` output.
-
----
-
-## Running the MPI Version
-
-To run the distributed STFT pipeline across multiple processes:
+By default the STFT is measured on 1, 5, 10 and 30 seconds of audio; giving `seconds` replaces that sweep with a single duration.
 
 ```bash
-mpirun -np 4 ./mpi_main
+cd core/build
+
+# Defaults
+./benchmarks/benchmark_Main
+
+# 10 repetitions, 3 warm-up iterations
+./benchmarks/benchmark_Main 10 3
+
+# 8192-sample frames, half overlap, 20 seconds of audio
+./benchmarks/benchmark_Main 7 2 8192 4096 20
+
+# The thread count for the parallel rows
+OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
 ```
 
-For hybrid execution combining MPI (inter-node) and OpenMP (intra-node) parallelism:
+### MPI / hybrid benchmarks
+
+```
+mpirun -np <P> ./benchmarks/benchmark_MPI_Main [reps=7] [warmup=2] [frame=1024] [hop=frame/2] [seconds] [strategy=scatter|bcast]
+```
+
+Each run reports three configurations of the same workload — a serial baseline, pure MPI, and hybrid MPI + OpenMP — with both parallel rows expressed as speedups over the baseline. The baseline is the root rank computing the whole spectrogram alone on one thread, with no scatter and no gather, so baseline and parallel rows share the executable, the allocation, the signal and the repetition count. Divide a speedup by the number of cores in use to get the efficiency. Alongside the timings the run prints the per-rank memory footprint: the input samples each rank holds under either distribution strategy, and the measured peak resident size from `VmHWM`.
 
 ```bash
-OMP_NUM_THREADS=4 mpirun -np 8 ./mpi_main
-```
+cd core/build
 
----
+# Pure MPI: 1 OpenMP thread per rank
+mpirun -np 4 ./benchmarks/benchmark_MPI_Main
 
-### Distributing the signal: broadcast versus scatter
+# Hybrid MPI + OpenMP: multiple threads per rank
+OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main
 
-The first version of `MPI_STFTAnalyzer` distributed the work but not the data. The root rank broadcast two scalars, the signal length and the sample rate, so that every rank could derive the frame layout on its own; it then broadcast the entire sample array with a single `MPI_Bcast`; each rank computed the frames of its assigned block, and `MPI_Gatherv` reassembled the magnitude matrix on the root. The design is simple for a good reason. STFT frames are independent, so the only thing a rank needs in order to compute frame *f* is the samples that frame reads, and handing every rank the whole signal makes the question of which samples those are disappear entirely: there are no block boundaries to get right, there is one collective to reason about, and every rank can address any frame by its global index.
+# Single-rank baseline
+mpirun -np 1 ./benchmarks/benchmark_MPI_Main
 
-What that design does not do is scale in memory. Every rank ends up holding all *N* samples regardless of how many ranks take part, so the per-rank input footprint is independent of *P*. One hour of mono audio at 44.1 kHz is roughly 159 million samples, which is about 1.27 GB once stored as `double`, and that figure is exactly the same on four ranks as on four hundred. Adding nodes therefore buys time to solution but never capacity: the longest signal the program can analyse remains the longest that fits in the memory of a single node. The strategy is appropriate for signals of moderate size, and it is the large ones it cannot follow.
-
-The default strategy now replaces the broadcast with an `MPI_Scatterv` that sends each rank only the samples its own frames actually read. Rank *r* owns frames `[start_r, start_r + count_r)`, which span
-
-```
-offset_r = start_r * hopSize
-length_r = (count_r - 1) * hopSize + frameSize
-```
-
-so a rank receives approximately `N/P` samples plus a halo of `frameSize - hopSize`: the tail of its block that the following block also needs in order to complete its own first frame. Consecutive send blocks consequently overlap, which `MPI_Scatterv` permits because it only ever reads the send buffer; the same overlap among the displacements of `MPI_Gatherv` would instead be a write race. The halo is a constant fixed by the frame geometry alone, so it does not grow with either the signal or the rank count: at the default 1024/512 geometry it is 512 samples, four kilobytes, set against blocks of tens of megabytes.
-
-`STFTAnalyzer` required no modification to operate on a slice. `analyzeRange` is called with `startFrame = 0`, and the offset it computes internally, `frameIdx * hopSize`, is then already relative to the beginning of the slice, which is `offset_r` in global coordinates. Ranks that receive no frames at all — a signal shorter than one frame, or simply fewer frames than ranks — are given a send count of zero and still participate in the collective, so no configuration deadlocks. The root rank is the one exception to the slice-relative scheme: it passes `MPI_IN_PLACE` and keeps addressing its frames inside the full signal it already holds, because receiving its own block into a second buffer would add another `N/P` to the peak of the rank that is already the largest. Both strategies remain selectable through the `Distribution` parameter of the constructor, which defaults to `Distribution::Scatter`, so the comparison below can be reproduced rather than merely reported.
-
-The table below was measured on Galileo100, on two ranks over thirty seconds of synthetic audio (1 323 000 samples) at frame 1024 and hop 512. The sample counts are analytic and exact; the resident sizes are the `VmHWM` high-water marks read from `/proc/self/status` and reduced across ranks. Because that mark covers the whole lifetime of a process, each row comes from its own run:
-
-```bash
+# 30 seconds of audio on two ranks, broadcast instead of scatter
 mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 bcast
-mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 scatter
 ```
 
-| Strategy | Input samples per rank | Input MiB | Peak RSS MIN (MiB) | Peak RSS MAX (MiB) | Peak RSS AVG (MiB) |
-|---|---|---|---|---|---|
-| broadcast | 1 323 000 | 10.09 | 35.30 | 55.57 | 45.44 |
-| scatter | 661 504 | 5.05 | 30.35 | 55.68 | 43.01 |
+Vary `-np` across runs to read the strong-scaling behaviour. The memory figure is a whole-process high-water mark, so the two distribution strategies have to be compared across two separate runs.
 
-The input footprint now falls as `N/P`, and the measured peak follows it: the lighter rank drops by 4.95 MiB against the 5.04 MiB the analytic column predicts, an agreement within two per cent. The maximum does not move — 55.57 MiB against 55.68, a tenth of a per cent — which is the intended effect of `MPI_IN_PLACE` on the root, and it is worth being explicit about why the maximum is the root's. The root rank reads the signal, so it holds *N* samples under either strategy, and it is also the rank that assembles the output; the scatter changes what the other *P − 1* ranks must hold, not what the reader holds. Subtracting the input from the peak leaves the same residue on both rows, about 25.3 MiB of process baseline — the binary, the MPI runtime, the OpenMP thread pools — which is why halving a thirty-second signal shows up as a fourteen per cent reduction of the process rather than a fifty per cent one. That baseline is a constant; the input is not, and it is the input that the 1.27 GB per rank of an hour of audio is made of.
+### The full benchmark suite
 
-The same comparison in the development container, at four ranks over ten minutes of audio, shows the block dividing by four as expected: 201.9 MiB of input per rank under the broadcast against 50.5 MiB under the scatter, and a peak of 276.3 MiB against 124.6 MiB on the lightest rank, with the maximum unchanged at 680.6 MiB in both cases. The halo behaves as designed in both settings. In the Galileo100 run the two blocks overlap by exactly 512 samples, `frameSize - hopSize`, while the last 504 samples of the signal are read by no frame at all, so the two blocks together carry 1 323 008 samples against the signal's 1 323 000.
+`scripts/run_suite.sh` is the single entry point that produces every result file: the test run, both benchmark executables, the memory comparison, and the strong-, thread- and weak-scaling sweeps. The CI, the SLURM job and a person at a terminal all call it, so their numbers are comparable by construction. Run it from the repository root:
 
-What neither run shows is the case the change is actually about. Two ranks on one node with a thirty-second signal is a scaled-down check: it confirms the model to within two per cent, and it is that agreement which licenses extrapolating the model to a signal that does not fit in the memory of a single node. Demonstrating the latter directly needs the production partition and a considerably longer input; `SCALING_RANKS="1 2 4 8" SCALING_DURATIONS=600 bash scripts/run_suite.sh` on `g100_usr_prod` is the natural next step.
+```bash
+# Against the build produced above
+bash scripts/run_suite.sh
 
-The gather side is deliberately unchanged, and that is where the remaining ceiling lies. The root rank still allocates the complete `totalFrames × numBins` magnitude matrix. At the default geometry that matrix stores `numBins / hopSize`, or 513/512, doubles for every input sample, which makes it very slightly *larger* than the signal it was computed from: the same hour of audio that occupies 1.27 GB as input yields about 1.27 GB of magnitudes on the root, on top of the signal the root read and the copy `analyze()` takes by value. The bottleneck has therefore moved from the input to the output rather than disappeared, and for a long enough recording it is the output that decides whether the run fits in memory. Removing it would mean not assembling the matrix at all — each rank writing its own range of frames directly through MPI-IO, or streaming block by block into the image exporter — which is beyond the scope of this change. A related limit sits in the same place: `MPI_Scatterv` and `MPI_Gatherv` express their counts and displacements as `int`, so both sides overflow above 2³¹ elements, around 13.5 hours of 44.1 kHz audio at this geometry. That limit is documented in the code rather than worked around.
+# A specific configuration
+RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
+SCALING_RANKS="1 2 4 8" SCALING_DURATIONS="5 30" bash scripts/run_suite.sh
 
+# On a cluster, against the Singularity image the CI builds from Singularity.def
+apptainer exec --bind "$PWD:$PWD" amsc_stft.sif bash scripts/run_suite.sh
+```
+
+Everything is configured through environment variables, all optional:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BUILD_DIR` | in-image path, else `core/build` | where the binaries are |
+| `RESULTS_DIR` | `./results/raw` | where result files are written |
+| `PREFIX` | `cluster` / `github` / `local` | file-name prefix, i.e. which machine |
+| `RANKS`, `THREADS` | 2, 2 | MPI ranks and OpenMP threads per rank |
+| `BENCH_ARGS` | `"7 2 1024 512"` | reps, warm-up, frame, hop |
+| `MEM_DURATION` | 30 | seconds of audio for the memory comparison |
+| `SCALING_RANKS` | powers of two up to the core count | rank list of the strong-scaling sweep |
+| `SCALING_DURATIONS` | `"5 15 60"` | one scaling curve per duration |
+| `THREAD_LIST` | powers of two up to the core count | thread list of the OpenMP sweep |
+| `WEAK_BASE` | 5 | seconds of audio per rank in the weak-scaling sweep |
+| `SCALING`, `THREAD_SCALING`, `WEAK_SCALING` | on | set any to `0` to skip that sweep |
+
+The results land in `results/raw/` as `<prefix>_env.txt`, `<prefix>_ctest.txt`, `<prefix>_benchmark_openmp.txt`, `<prefix>_benchmark_mpi.txt`, `<prefix>_memory_bcast_vs_scatter.txt`, `<prefix>_scaling.txt`, `<prefix>_scaling_threads.txt` and `<prefix>_weak_scaling.txt`. Two scripts turn them into tables and figures:
+
+```bash
+python3 analysis/parse_results.py results/raw/ -o results/csv/
+python3 analysis/plot_results.py --csv results/csv/ --out results/figures/
+```
+
+`parse_results.py` takes one or more result directories — `results/raw/*/` when several machines have been collected side by side — and produces `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one figure per topic, in PDF and PNG, with the plotted numbers beside each.
+
+### Where we ran it
+
+The suite was run on two HPC systems, in both cases through the scripts in `scripts/`:
+
+| System | Submission | Configuration |
+|---|---|---|
+| **Galileo100** (CINECA) | `sbatch scripts/job.sh`, from the directory holding `amsc_stft.sif` | inside the Singularity image built by the CI, on the `g100_all_serial` partition |
+| **MOX** (MOX laboratory, Politecnico di Milano) | `qsub scripts/job_mox.pbs`, from `/work/$USER/AMSC_STFT` | native build with `gcc@15.2.0` and `openmpi@5.0.8`, up to 28 cores on the `cpu` queue |
+
+Running Galileo100 through the container means the timed binaries are exactly the ones the pipeline ships, and the MOX job reuses the same `run_suite.sh` with a wider sweep, so the two machines produce directly comparable files. The measurements from both, and the discussion of what they show about the shared-memory, distributed and hybrid strategies, are in the project report included in this repository.
+
+---
 
 ## Continuous Integration and Deployment
 
@@ -343,8 +414,9 @@ The `ci` job runs on an Ubuntu 22.04 runner and automatically:
 - installs the required HPC dependencies (CMake, OpenMP, OpenMPI) from `system-deps.txt`;
 - configures the project with CMake and compiles all source files and tests;
 - runs the full test suite via `ctest`;
+- runs `scripts/run_suite.sh` and uploads the measurements as the `benchmark-results-github` artifact;
 - builds a [Singularity](https://apptainer.org/) container image (`amsc_stft.sif`) from `Singularity.def`, which compiles and packages the project in an immutable environment based on Ubuntu 22.04;
-- uploads the container image as a GitHub Actions artifact (retained for 7 days).
+- uploads the container image as the `amsc-stft-sif` artifact (retained for 7 days).
 
 This ensures that new changes do not introduce regressions and that the project builds correctly in a clean, reproducible environment.
 
@@ -355,15 +427,16 @@ The `cd` job runs only after `ci` completes successfully. It deploys the contain
 1. **Downloads** the `amsc_stft.sif` artifact produced by the CI stage.
 2. **Connects** to the Galileo100 login node via SSH, using a private key and certificate stored as GitHub Actions secrets (`HPC_SSH_PRIVATE_KEY`, `HPC_CERT`, `HPC_USERNAME`, `HPC_SCRATCH_PATH`).
 3. **Transfers** the container image and the whole `scripts/` directory to the cluster scratch directory — the job script and the benchmark suite it calls travel together, so they can never arrive out of step.
-4. **Submits** the job via `sbatch scripts/job.sh`.
+4. **Submits** the job via `sbatch --wait scripts/job.sh`.
+5. **Copies the results back** and uploads them as the `benchmark-results-cluster` artifact.
 
-The SLURM script (`scripts/job.sh`) requests 4 CPUs and 2 GB of memory, sets `OMP_NUM_THREADS` from the SLURM allocation, and runs `ctest` inside the container:
+The SLURM script (`scripts/job.sh`) requests 2 tasks of 2 CPUs and 4 GB of memory on the `g100_all_serial` partition and runs the benchmark suite inside the container; `run_suite.sh` reads `SLURM_NTASKS` and `SLURM_CPUS_PER_TASK` to size its sweeps to that allocation:
 
 ```bash
-singularity exec --pwd /app/AMSC_STFT/core/build amsc_stft.sif ctest --output-on-failure
+singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" amsc_stft.sif bash scripts/run_suite.sh
 ```
 
-Because the binary is compiled inside the immutable container during the CI stage, no build step is required on the cluster: the job runs the pre-built test suite directly.
+Because the project is compiled inside the immutable container during the CI stage, no build step is required on the cluster: the job runs the pre-built binaries directly.
 
 ### Setting Up SSH Authentication for Galileo100
 
@@ -396,98 +469,3 @@ Then, under **Settings → Secrets and variables → Actions**, create:
 | `HPC_CERT` | content of `~/.ssh/cineca_key-cert.pub` |
 | `HPC_USERNAME` | CINECA username (e.g. `mcolombo`) |
 | `HPC_SCRATCH_PATH` | scratch directory (e.g. `/gpfs/scratch/userspace/your_username`) |
-
----
-
-## Benchmarks
-
-The `benchmarks/` directory contains a dedicated benchmarking suite for evaluating the computational performance of the different FFT and STFT implementations. The suite measures execution time across combinations of FFT algorithms, window functions, signal lengths, and thread/process counts.
-
-The benchmark infrastructure is intentionally decoupled from the core library, following the Single Responsibility Principle. For distributed benchmarking on HPC clusters, `benchmark_MPI_Main.cpp` serves as the entry point.
-
-Both benchmark executables accept two optional arguments: `[reps] [warmup]` (number of timed repetitions and warm-up iterations).
-
-### Serial / OpenMP benchmarks
-
-Compares the FFT engines (`RecursiveFFT`, `IterativeFFT`, `ParallelFFT`) and the serial vs OpenMP STFT:
-
-```bash
-cd build
-
-# Default run (7 repetitions, 2 warm-up iterations)
-./benchmarks/benchmark_Main
-
-# Custom repetitions / warm-up
-./benchmarks/benchmark_Main 10 3
-
-# Control the OpenMP thread count for the parallel sections
-OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
-```
-
-### MPI / hybrid benchmarks
-
-Compares three configurations of the same run — a serial baseline, pure MPI, and hybrid MPI + OpenMP — and reports both parallel rows as speedups over the baseline. The baseline is the root rank computing the whole spectrogram alone, on one thread, with no scatter and no gather, using the very engine `MPI_STFTAnalyzer` composes; the other ranks wait in the barrier, so the timing is root's. Measuring it inside this binary rather than reading it off `benchmark_Main` is what makes the column a speedup in the proper sense: baseline and parallel rows then share the executable, the allocation, the signal and the repetition count. Dividing a speedup by the number of cores in use gives the efficiency, and dividing the two speedups by each other gives the gain of the threads over the processes. At `-np 1` the serial and MPI rows measure almost the same thing, and their agreement is a cheap check that the distributed path costs nothing when there is nothing to distribute.
-
-Vary `-np` across runs to read the strong-scaling behaviour:
-
-```bash
-cd build
-
-# Pure MPI: 1 OpenMP thread per rank
-mpirun -np 4 ./benchmarks/benchmark_MPI_Main
-
-# Hybrid MPI + OpenMP: multiple threads per rank
-OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main
-
-# Single-rank baseline
-mpirun -np 1 ./benchmarks/benchmark_MPI_Main
-```
-
-Besides the timings, the run reports the per-rank memory footprint: an analytic table of the input samples each rank has to hold under both distribution strategies, and the measured peak resident size taken from `VmHWM`. A sixth argument selects the strategy (`scatter`, the default, or `bcast`), which is how the before/after comparison in [Distributing the signal: broadcast versus scatter](#distributing-the-signal-broadcast-versus-scatter) was produced. The peak is a whole-process high-water mark, so the two strategies have to be run as two separate processes for the figure to be attributable to either of them.
-
-### Results on Galileo100
-
-The numbers discussed here come from a single SLURM job on Galileo100 (job 21727805, 12 August 2026) running the Singularity image built by the CI pipeline, so they were produced by exactly the binaries the pipeline ships. The allocation was two ranks of two threads, four cores of an Intel Xeon Platinum 8260 at 2.4 GHz, on the `g100_all_serial` partition. All fifteen tests pass there, the four rank counts of the distributed STFT included, and the repetition-to-repetition standard deviation stays below half a per cent of the mean in every row, which is what makes differences of a few per cent readable at all.
-
-#### What a frame costs
-
-The serial STFT costs 119.5 µs per frame at every workload measured: 10.161 ms for 85 frames, 51.228 for 429, 102.659 for 860 and 308.663 for 2582, which is linear to four significant figures. A single forward `IterativeFFT` of the same size takes 111 µs, so the transform accounts for about 93 per cent of the cost of a frame, and everything around it — the copy with zero padding, the window, the packing into complex values, the magnitude — for the remaining seven. Two things follow from that. Optimising anything other than the FFT is not worth the effort at this geometry, and a frame is a large enough unit of work to be worth distributing on its own, which is the assumption both the OpenMP loop and the MPI decomposition rest on.
-
-| Transform size | RecursiveFFT | IterativeFFT | ParallelFFT (4 threads) |
-|---|---|---|---|
-| 1 024 | 0.135 | 0.111 | 0.048 |
-| 262 144 | 54.237 | 46.471 | 12.360 |
-
-*(fastest of seven repetitions, in milliseconds)*
-
-The same table settles a design question stated in `STFTAnalyzer.hpp`: whether to parallelise the frame loop and keep each transform serial, or to parallelise the transforms internally. At 1024 points `ParallelFFT` on four threads gains 2.80× over the iterative engine, whereas parallelising the frame loop with the same four threads gains 3.98×. A 1024-point transform is simply too small to keep four threads busy, and frame-level parallelism wins by enough — some forty per cent — that nesting the two is not worth revisiting. The picture would change for much larger frames, where `ParallelFFT` reaches 4.32× on its own at 65 536 points.
-
-#### Shared memory, distributed memory, and the two together
-
-| Workload | serial, 1 thread | OpenMP, 4 threads | MPI, 2 ranks | hybrid, 2 ranks × 2 threads |
-|---|---|---|---|---|
-| 85 frames | 10.161 | 2.656 | 5.273 | 2.765 |
-| 429 frames | 51.228 | 12.980 | 28.068 | 15.252 |
-| 860 frames | 102.659 | 25.790 | 55.706 | 29.933 |
-| 2582 frames | 308.663 | 77.578 | 165.125 | 87.625 |
-
-*(fastest of seven repetitions, in milliseconds, at frame 1024 and hop 512; the first two columns from `benchmark_Main`, the last two from `benchmark_MPI_Main`)*
-
-Reading the last row: four OpenMP threads turn 308.7 ms into 77.6, a speedup of 3.98× at 99.5 per cent efficiency; two MPI ranks turn it into 165.1, which is 1.87× at 93 per cent; the two together, on the same four cores, give 87.6 ms, 3.52× at 88 per cent. The ranking holds at every workload and it is the expected one. Threads share the signal and the output buffer and pay only for the fork and join of the parallel region, whereas ranks have to be sent their input and have their results gathered back.
-
-The cost of that distribution can be given a number, with a caveat about how firm the number is. If the two ranks scaled perfectly the 2582-frame case would take 154.3 ms, and it takes 165.1, so about seven per cent of the time is spent outside the computation; the same estimate over the four workloads gives four, ten, nine and seven per cent. Those figures are best read as a band rather than as a trend, for two reasons: they compare two different executables, the serial baseline coming from `benchmark_Main` and the distributed one from `benchmark_MPI_Main`, and the same MPI-pure configuration measured in two separate job steps differed by 3.4 per cent (165.1 ms against 159.7 at 2582 frames). That weakness has since been removed from the tool rather than argued around: `benchmark_MPI_Main` now measures its own serial baseline in the same run, so repeating this campaign yields the comparison inside a single table, and the strong-scaling section of `scripts/run_suite.sh` remains the way to read scaling across rank counts.
-
-The practical conclusion for a single node is that MPI does not buy speed there — pure OpenMP is between 4 and 18 per cent faster than the hybrid at equal core count — and that it is not meant to. What the distributed layer buys is the ability to use more than one node and, since the scatter, the ability to hold a signal larger than the memory of one node. On a single node the hybrid configuration is nevertheless the sensible way to run the distributed binary: at 1.85× to 1.90× over pure MPI, the second thread per rank recovers nearly everything the process-level split gives away.
-
-One expectation stated in the benchmark's own notes is not borne out by the data. The hybrid gain does not improve as the frame count grows: it is 1.90× at 85 frames and 1.88× at 2582, flat within the noise. Eighty-five frames already amount to some ten milliseconds of work per rank, far more than an OpenMP region costs to open and close, so there is nothing left to amortise. The serial-versus-OpenMP table does show the expected ramp, from 3.83× to 3.98×, and it saturates just as early.
-
-The two distribution strategies were also timed against each other at 2582 frames, back to back within the same job step, which is what makes that particular comparison a fair one. The scatter is slightly faster: 159.7 ms against 161.4 with one thread per rank, and 82.3 against 84.0 in hybrid mode, so one to two per cent. That is the expected sign and the expected magnitude. A broadcast has to deliver *N* samples to each of the *P* ranks while the scatter delivers about *N* in total, so at two ranks the saving amounts to half of a ten-megabyte transfer set against a run of 160 ms, and the gap should widen with the rank count. The reason for the change was never speed, but it is worth recording that it costs none.
-
-The memory side of the same job is discussed in [Distributing the signal: broadcast versus scatter](#distributing-the-signal-broadcast-versus-scatter), where the measured drop matches the analytic prediction to within two per cent. Two limits of this campaign are worth stating plainly. The `g100_all_serial` partition runs on a login node shared with other users, so these are not exclusive-node timings, even if their stability across repetitions suggests the sharing did not perturb them; and two ranks on a single node cannot demonstrate memory scalability at the scale that motivated it, only confirm the model that predicts it.
-
----
-
-## Additional Notes
-
-- OpenMP parallelism is enabled automatically if the compiler and system support it. No manual configuration is required.
-- MPI must be installed and available on the system to compile and run the distributed components (`MPI_STFTAnalyzer`, `mpi_main`, `benchmark_MPI_Main`).

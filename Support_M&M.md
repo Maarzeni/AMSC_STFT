@@ -309,6 +309,5 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 ```
 
 ## TO DO
-- togliere warning dalla compilazione
 - decidere quali dei numerosi test tenere/presentare/sistemare
 
