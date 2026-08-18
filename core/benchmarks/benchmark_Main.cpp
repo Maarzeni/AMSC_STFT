@@ -3,19 +3,33 @@
  * @brief Serial / OpenMP benchmark entry point (no MPI).
  *
  * @details
- * Two benchmark groups:
+ * Three benchmark groups, each writing `kind = "timing"` CSV rows (see the
+ * schema documented in benchmark_Suite.hpp):
  *
- *   1. FFT engines on a single transform of increasing size:
- *        - RecursiveFFT
- *        - IterativeFFT
- *        - ParallelFFT (OpenMP, auto-detected thread count)
- *      Speedup is reported relative to RecursiveFFT.
+ *   1. FFT engines (section "fft") on a single transform of increasing size:
+ *      RecursiveFFT, IterativeFFT, ParallelFFT (OpenMP, auto-detected thread
+ *      count). Speedup is reported relative to RecursiveFFT.
  *
- *   2. STFT over signals of increasing length, comparing at each size:
- *        - serial  : STFTAnalyzer<IterativeFFT, HannWindow> with 1 thread
- *        - OpenMP  : same analyzer with all available threads
- *      (The OpenMP parallelism is the frame loop inside STFTAnalyzer.)
- *      Speedup is reported relative to the serial run at the SAME size.
+ *   2. STFT (section "stft") over signals of increasing length, comparing
+ *      STFTAnalyzer<IterativeFFT, HannWindow> serial (1 thread) against the
+ *      same analyzer with all available threads. The OpenMP parallelism is
+ *      the frame loop inside STFTAnalyzer. Speedup is relative to the serial
+ *      run at the same size.
+ *
+ *   3. Parallelism granularity (section "stft_granularity"): the same thread
+ *      budget spent two different ways — parallel ACROSS frames (STFT
+ *      OpenMP + IterativeFFT, reusing group 2's measurement) versus parallel
+ *      WITHIN each frame's transform (a plain sequential frame loop calling
+ *      ParallelFFT). Both are reported against the same serial baseline as
+ *      group 2, so the two strategies are directly comparable.
+ *
+ *      STFTAnalyzer<ParallelFFT, ...> is not used for the second row: its
+ *      frame loop and ParallelFFT's own OpenMP region read the same thread
+ *      count, so nesting them cannot keep the frame loop serial while the
+ *      transform stays parallel (see the "Parallelism strategy" note in
+ *      STFTAnalyzer.hpp). The loop below is written out instead, mirroring
+ *      STFTAnalyzer's own per-frame steps with a ParallelFFT engine built
+ *      once, with an explicit thread count untouched by that conflict.
  *
  * Usage:
  *   ./benchmark_Main [reps] [warmup] [frame] [hop] [seconds]
@@ -23,6 +37,10 @@
  *   ./benchmark_Main 7 2 8192 4096 20      # coarser frames, 20 s of audio
  *
  * `hop` may be given as 0, meaning frame/2.
+ *
+ * Output is CSV on stdout, nothing else — see benchmark_Suite.hpp for the
+ * column schema and how to read it. MPI / hybrid STFT benchmarks: see
+ * benchmark_MPI_Main.
  *
  * Only std::chrono + STL + project code are used.
  */
@@ -35,6 +53,7 @@
 #include "stft/STFTAnalyzer.hpp"
 #include "window/HannWindow.hpp"
 
+#include <complex>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -62,6 +81,41 @@ void setThreads([[maybe_unused]] int n) {
 #endif
 }
 
+/**
+ * @brief One STFT pass — window, transform, magnitude — over a plain
+ *        sequential frame loop, using the given (already constructed) FFT
+ *        engine for every frame.
+ *
+ * Mirrors STFTAnalyzer::computeFrame's steps so a row built from this is
+ * directly comparable to STFTAnalyzer's own rows. No OpenMP region of its
+ * own: parallelism, if any, comes entirely from `fft` itself.
+ */
+template<typename FFT>
+std::vector<double> analyzeSequential(FFT& fft, HannWindow& win,
+                                      const std::vector<double>& signal,
+                                      std::size_t frame, std::size_t hop,
+                                      std::size_t frames) {
+    const std::size_t numBins = frame / 2 + 1;
+    const double norm = static_cast<double>(frame) * win.coherentGain();
+
+    std::vector<double> magnitudes(frames * numBins);
+    std::vector<double> buf(frame);
+    std::vector<std::complex<double>> spec(frame);
+
+    for (std::size_t fi = 0; fi < frames; ++fi) {
+        const std::size_t offset = fi * hop;
+        for (std::size_t i = 0; i < frame; ++i)
+            buf[i] = (offset + i < signal.size()) ? signal[offset + i] : 0.0;
+        win.apply(buf);
+        for (std::size_t i = 0; i < frame; ++i)
+            spec[i] = {buf[i], 0.0};
+        fft.forward(spec);
+        for (std::size_t k = 0; k < numBins; ++k)
+            magnitudes[fi * numBins + k] = std::abs(spec[k]) / norm;
+    }
+    return magnitudes;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -70,19 +124,15 @@ int main(int argc, char** argv) {
     if (argc >= 2) reps   = std::max(1, std::atoi(argv[1]));
     if (argc >= 3) warmup = std::max(0, std::atoi(argv[2]));
 
-    // Geometry of the STFT section (the FFT section uses its own size sweep).
-    // Larger frames raise the work per OpenMP iteration and thus amortise the
-    // fixed synchronisation cost, at the price of fewer frames to distribute.
+    // Geometry of the STFT sections (the FFT section uses its own size sweep).
     std::size_t frame = 1024;
     std::size_t hop   = 0;        // 0 → frame / 2
     if (argc >= 4) frame = static_cast<std::size_t>(std::max(2, std::atoi(argv[3])));
     if (argc >= 5) hop   = static_cast<std::size_t>(std::max(0, std::atoi(argv[4])));
     if (hop == 0) hop = frame / 2;
 
-    // Workload sweep for the STFT section, expressed as seconds of audio, so
-    // that the table shows how the OpenMP gain grows with the number of frames
-    // the way the FFT table shows it growing with transform size.  Passing a
-    // duration on the command line collapses the sweep to that single point.
+    // Workload sweep, expressed as seconds of audio. Passing a duration on
+    // the command line collapses the sweep to that single point.
     std::vector<double> durations = {1.0, 5.0, 10.0, 30.0};
     if (argc >= 6) durations = { std::max(0.1, std::atof(argv[5])) };
 
@@ -91,21 +141,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "AMSC_STFT Benchmark Suite (serial / OpenMP)\n"
-              << "  repetitions : " << reps << "  (warmup " << warmup << ")\n"
-              << "  max threads : " << maxThreads() << "\n"
-              << "  frame / hop : " << frame << " / " << hop << " samples\n"
-              << "  workloads   : ";
-    for (std::size_t i = 0; i < durations.size(); ++i)
-        std::cout << durations[i]
-                  << (i + 1 < durations.size() ? ", " : " s of audio\n");
+    bench::writeHeader(std::cout);
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 1. FFT engines
-    // ══════════════════════════════════════════════════════════════════════════
-    bench::printSectionTitle("FFT engines (single forward transform)");
-    bench::printTableHeader();
-
+    // ─── FFT engines ────────────────────────────────────────────────────────
     const std::vector<std::size_t> fftSizes = {
         1u << 10, 1u << 12, 1u << 14, 1u << 16, 1u << 18
     };
@@ -121,29 +159,34 @@ int main(int argc, char** argv) {
         const bench::Stats sItr = bench::benchFFT(itr, input, warmup, reps);
         const bench::Stats sPar = bench::benchFFT(par, input, warmup, reps);
 
+        const int threads = maxThreads();
         const double base = sRec.mean;  // baseline = recursive
-        bench::printRow("RecursiveFFT", n, sRec);
-        bench::printRow("IterativeFFT", n, sItr, base);
-        bench::printRow("ParallelFFT",  n, sPar, base);
-        std::cout << "\n";
+        bench::writeTiming(std::cout, "fft", "RecursiveFFT", 1, 1, threads,
+                           static_cast<long long>(n), std::nullopt, std::nullopt, sRec);
+        bench::writeTiming(std::cout, "fft", "IterativeFFT", 1, 1, threads,
+                           static_cast<long long>(n), std::nullopt, std::nullopt, sItr, base);
+        bench::writeTiming(std::cout, "fft", "ParallelFFT", 1, threads, threads,
+                           static_cast<long long>(n), std::nullopt, std::nullopt, sPar, base);
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 2. STFT: serial vs OpenMP
-    // ══════════════════════════════════════════════════════════════════════════
-    bench::printSectionTitle("STFT: serial vs OpenMP (IterativeFFT + HannWindow)");
-    bench::printTableHeader();
-
+    // ─── STFT: serial vs OpenMP, and parallelism granularity ───────────────
     constexpr std::uint32_t SR = 44100;
 
-    // Frame geometry is fixed across the sweep, so one analyzer serves every
-    // workload: only the signal handed to analyze() changes.
+    // Frame geometry is fixed across the sweep, so one analyzer — and one
+    // ParallelFFT engine — serves every workload; only the signal changes.
     STFTAnalyzer<IterativeFFT, HannWindow> analyzer(frame, hop, SR);
 
-    // Capture the thread count before clamping: omp_set_num_threads() writes
-    // the same internal variable that omp_get_max_threads() reads back, so
-    // after setThreads(1) the machine's real core count is no longer readable.
+    // Captured before clamping: omp_set_num_threads() writes the same
+    // variable omp_get_max_threads() reads back, so after setThreads(1) the
+    // machine's real core count is no longer readable.
     const int nThreads = maxThreads();
+
+    // Explicit thread count, not the 0 = auto-detect default: ParallelFFT
+    // would otherwise read the ambient thread count at construction, which
+    // setThreads(1) below sets to 1 — collapsing it to serial along with the
+    // frame loop instead of staying parallel independently of it.
+    ParallelFFT granularityFFT(static_cast<std::size_t>(nThreads));
+    HannWindow  granularityWin(frame);
 
     for (const double sec : durations) {
         const std::size_t signalLen =
@@ -157,27 +200,38 @@ int main(int argc, char** argv) {
 
         const auto signal = bench::makeSignal(signalLen, SR);
 
-        // Serial (1 thread)
         setThreads(1);
         const bench::Stats sSerial = bench::benchSTFT(analyzer, signal, warmup, reps);
-        bench::printRow("STFT serial (1 thread)", frames, sSerial);
+        bench::writeTiming(std::cout, "stft", "STFT serial (1 thread)", 1, 1, nThreads,
+                           std::nullopt, static_cast<long long>(frames), sec, sSerial);
 
-        // OpenMP (all threads)
         setThreads(nThreads);
         const bench::Stats sOmp = bench::benchSTFT(analyzer, signal, warmup, reps);
-        bench::printRow("STFT OpenMP (" + std::to_string(nThreads) + " thr)",
-                        frames, sOmp, sSerial.mean);
-        std::cout << "\n";
-    }
+        bench::writeTiming(std::cout, "stft",
+                           "STFT OpenMP (" + std::to_string(nThreads) + " thr)",
+                           1, nThreads, nThreads, std::nullopt,
+                           static_cast<long long>(frames), sec, sOmp, sSerial.mean);
 
-    std::cout << "Notes:\n"
-              << "  - speedup is relative to the first row of each block.\n"
-              << "  - each STFT block is one workload; the frame count grows\n"
-              << "    down the table, so the OpenMP gain should improve with it.\n"
-              << "  - set OMP_NUM_THREADS to control the OpenMP thread count.\n"
-              << "  - args: [reps] [warmup] [frame] [hop] [seconds];\n"
-              << "    giving [seconds] replaces the sweep with one workload.\n"
-              << "  - MPI / hybrid STFT benchmarks: see benchmark_MPI_Main.\n";
+        // Same thread budget, spent inside each transform instead of across
+        // frames. setThreads() does not affect this measurement: the frame
+        // loop has no OpenMP region and granularityFFT's thread count was
+        // fixed at construction.
+        const bench::Stats sGranular = bench::measure(warmup, reps, [&] {
+            auto magnitudes = analyzeSequential(granularityFFT, granularityWin,
+                                                signal, frame, hop, frames);
+            bench::doNotOptimize(magnitudes);
+        });
+        bench::writeTiming(std::cout, "stft_granularity",
+                           "sequential frames + ParallelFFT (" +
+                               std::to_string(nThreads) + " thr)",
+                           1, nThreads, nThreads, std::nullopt,
+                           static_cast<long long>(frames), sec, sGranular, sSerial.mean);
+        bench::writeTiming(std::cout, "stft_granularity",
+                           "OpenMP frames + IterativeFFT (" +
+                               std::to_string(nThreads) + " thr)",
+                           1, nThreads, nThreads, std::nullopt,
+                           static_cast<long long>(frames), sec, sOmp, sSerial.mean);
+    }
 
     return 0;
 }

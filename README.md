@@ -67,8 +67,9 @@ scripts/                       ← Everything that RUNS the project
 └── job_mox.pbs                ← PBS submission (MOX cluster), same suite
 
 analysis/                      ← Everything that READS the results
-├── parse_results.py           ← Text tables → tidy CSV (standard library only)
-├── plot_results.py            ← CSV → figures for the report (matplotlib)
+├── parse_results.py           ← Tags raw CSV with machine/source, merges it
+│                                 (standard library only)
+├── plot_results.py            ← CSV → PNG figures for the report (matplotlib)
 └── requirements.txt           ← pip packages for the above (matplotlib)
 
 core/
@@ -137,9 +138,12 @@ core/
                                       first is also test_WavReader's fixture
 
 results/                           ← Everything a run writes. Not in git.
-├── raw/                           ← run_suite.sh output, one file per topic
-├── csv/                           ← parse_results.py output
-├── figures/                       ← plot_results.py output
+├── raw/                           ← run_suite.sh output: CSV per topic, plus
+│                                     the environment and ctest logs
+├── analysis/                      ← everything downstream of raw/
+│   ├── csv/                       ← parse_results.py output
+│   ├── figures/                   ← plot_results.py output (PNG)
+│   └── ctest-run/                 ← ctest's own working copy (see run_suite.sh)
 └── results_examples/              ← the spectrograms the two examples in
                                       core/examples/ write
 ```
@@ -328,15 +332,21 @@ Keep `-j` times `OMP_NUM_THREADS` within the available cores: `ctest -j4` with `
 
 The `benchmarks/` directory measures the execution time of the FFT engines and of the STFT under each parallelisation strategy. There are two executables — one for the shared-memory side, one for the distributed side — and a script that runs both in a fixed configuration and writes the results to disk.
 
+Both executables write CSV rows to stdout: one row per measurement, no other output, meant for `analysis/parse_results.py` rather than for reading directly. The column schema is documented in `benchmarks/benchmark_Suite.hpp`.
+
 ### Serial / OpenMP benchmarks
 
-Compares the FFT engines (`RecursiveFFT`, `IterativeFFT`, `ParallelFFT`) and the serial against the OpenMP STFT.
+Three comparisons, all against the same serial baseline:
+
+- **FFT engines** — `RecursiveFFT`, `IterativeFFT`, `ParallelFFT` on a single transform of increasing size.
+- **STFT, serial vs OpenMP** — `STFTAnalyzer<IterativeFFT, HannWindow>` with one thread against all available threads; the OpenMP parallelism is the frame loop.
+- **Parallelism granularity** — the same thread budget spent two ways: across frames (the OpenMP row above) versus inside each frame's transform (a sequential frame loop calling `ParallelFFT`). `STFTAnalyzer<ParallelFFT, ...>` is not used for the second row: its frame loop and `ParallelFFT`'s own OpenMP region would read the same thread count, so nesting them cannot keep one serial while the other stays parallel (see the note in `STFTAnalyzer.hpp`).
 
 ```
 ./benchmarks/benchmark_Main [reps=7] [warmup=2] [frame=1024] [hop=frame/2] [seconds]
 ```
 
-By default the STFT is measured on 1, 5, 10 and 30 seconds of audio; giving `seconds` replaces that sweep with a single duration.
+By default the STFT comparisons are measured on 1, 5, 10 and 30 seconds of audio; giving `seconds` replaces that sweep with a single duration.
 
 ```bash
 cd core/build
@@ -360,7 +370,7 @@ OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
 mpirun -np <P> ./benchmarks/benchmark_MPI_Main [reps=7] [warmup=2] [frame=1024] [hop=frame/2] [seconds] [strategy=scatter|bcast]
 ```
 
-Each run reports three configurations of the same workload — a serial baseline, pure MPI, and hybrid MPI + OpenMP — with both parallel rows expressed as speedups over the baseline. The baseline is the root rank computing the whole spectrogram alone on one thread, with no scatter and no gather, so baseline and parallel rows share the executable, the allocation, the signal and the repetition count. Divide a speedup by the number of cores in use to get the efficiency. Alongside the timings the run prints the per-rank memory footprint: the input samples each rank holds under either distribution strategy, and the measured peak resident size from `VmHWM`.
+Each run reports three configurations of the same workload — a serial baseline, pure MPI, and hybrid MPI + OpenMP — with both parallel rows carrying their speedup over the baseline. The baseline is the root rank computing the whole spectrogram alone on one thread, with no scatter and no gather, so baseline and parallel rows share the executable, the allocation, the signal and the repetition count. Divide a speedup by the number of cores in use to get the efficiency. Alongside the timings the run reports the per-rank memory footprint: the input samples each rank holds under either distribution strategy, and the measured peak resident size from `VmHWM`.
 
 ```bash
 cd core/build
@@ -412,14 +422,14 @@ Everything is configured through environment variables, all optional:
 | `WEAK_BASE` | 5 | seconds of audio per rank in the weak-scaling sweep |
 | `SCALING`, `THREAD_SCALING`, `WEAK_SCALING` | on | set any to `0` to skip that sweep |
 
-The results land in `results/raw/` as `<prefix>_env.txt`, `<prefix>_ctest.txt`, `<prefix>_benchmark_openmp.txt`, `<prefix>_benchmark_mpi.txt`, `<prefix>_memory_bcast_vs_scatter.txt`, `<prefix>_scaling.txt`, `<prefix>_scaling_threads.txt` and `<prefix>_weak_scaling.txt`. Two scripts turn them into tables and figures:
+The results land in `results/raw/` as `<prefix>_env.txt`, `<prefix>_ctest.txt`, `<prefix>_benchmark_openmp.csv`, `<prefix>_benchmark_mpi.csv`, `<prefix>_memory_bcast_vs_scatter.csv`, `<prefix>_scaling.csv`, `<prefix>_scaling_threads.csv` and `<prefix>_weak_scaling.csv` — the `.txt` files are plain logs, the `.csv` ones are the benchmarks' own output, several invocations appended into one file per topic. Two scripts turn them into tidy CSV and figures:
 
 ```bash
-python3 analysis/parse_results.py results/raw/ -o results/csv/
-python3 analysis/plot_results.py --csv results/csv/ --out results/figures/
+python3 analysis/parse_results.py results/raw/ -o results/analysis/csv/
+python3 analysis/plot_results.py --csv results/analysis/csv/ --out results/analysis/figures/
 ```
 
-`parse_results.py` takes one or more result directories — `results/raw/*/` when several machines have been collected side by side — and produces `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one figure per topic, in PDF and PNG, with the plotted numbers beside each.
+`parse_results.py` takes one or more result directories — `results/raw/*/` when several machines have been collected side by side — tags every row with its machine and which sweep produced it, and writes `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one PNG per figure.
 
 ### Where we ran it
 

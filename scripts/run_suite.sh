@@ -114,6 +114,22 @@ note_status() {  # note_status <exit code> <section name>
     [ "$1" -eq 0 ] || FAILED="${FAILED} $2"
 }
 
+# Runs a benchmark binary, appending its CSV rows to FILE. Several sections
+# call this many times per file (once per rank/thread/duration in a sweep),
+# and each invocation prints its own header — so every call after the first
+# has it stripped before appending, leaving exactly one header per file.
+# PIPESTATUS[0] (what note_status reads right after calling this) still
+# reflects the benchmark binary's own exit code either way, since it is
+# always the first stage of whichever pipeline runs.
+csv_append() {  # csv_append <file> <cmd...>
+    local file=$1; shift
+    if [ -s "${file}" ]; then
+        "$@" 2>&1 | tail -n +2 | tee -a "${file}"
+    else
+        "$@" 2>&1 | tee -a "${file}"
+    fi
+}
+
 # Powers of two up to <max>, with <max> appended when it is not itself one, so a
 # 6-core machine sweeps 1 2 4 6 instead of stopping at 4 and wasting two cores.
 sweep_list() {  # sweep_list <max>
@@ -268,7 +284,7 @@ SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
 echo "==================== [1/7] Unit tests (ctest) ============================"
-CTEST_MIRROR="${RESULTS_DIR}/../ctest-run"
+CTEST_MIRROR="${RESULTS_DIR}/../analysis/ctest-run"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
 ( cd "${BUILD_DIR}" && find . -name CTestTestfile.cmake -exec cp --parents -t "${CTEST_MIRROR}" {} + )
@@ -282,17 +298,17 @@ note_status "${PIPESTATUS[0]}" "unit-tests"
 echo ""
 echo "============== [2/7] Benchmark: serial / OpenMP =========================="
 export OMP_NUM_THREADS=${TOTAL_CORES}
-"${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS} \
-    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.txt"
+csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.csv" \
+    "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS}
 note_status "${PIPESTATUS[0]}" "benchmark-openmp"
 
 # ── Section 3: distributed / hybrid benchmark ───────────────────────────────
 echo ""
 echo "============ [3/7] Benchmark: MPI / hybrid ==============================="
 export OMP_NUM_THREADS=${THREADS}
-mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
-    "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS} \
-    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.txt"
+csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.csv" \
+    mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
+    "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS}
 note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 
 # ── Section 4: memory, broadcast vs scatter ─────────────────────────────────
@@ -301,7 +317,7 @@ note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 # peak to the scatter too. Hence two launches, identical but for the strategy.
 echo ""
 echo "======== [4/7] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
-MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.txt"
+MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.csv"
 : > "${MEMFILE}"
 export OMP_NUM_THREADS=${THREADS}
 
@@ -312,15 +328,12 @@ export OMP_NUM_THREADS=${THREADS}
 MEM_RANKS=${MEM_RANKS:-${SCALING_RANKS:-${RANKS}}}
 for P in ${MEM_RANKS}; do
     for STRATEGY in bcast scatter; do
-        {
-            echo ""
-            echo "════════════════ -np ${P} · distribution: ${STRATEGY} ════════════════"
-        } | tee -a "${MEMFILE}"
+        echo "  -np ${P} · distribution: ${STRATEGY}"
 
-        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+        csv_append "${MEMFILE}" \
+            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}" \
-            2>&1 | tee -a "${MEMFILE}"
+            ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}"
         note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
     done
 done
@@ -350,41 +363,26 @@ if [ "${SCALING:-1}" != "0" ]; then
     export OMP_NUM_THREADS=${SCALING_THREADS}
 
     # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the machine
-    # one step earlier than the pure row does. Past this rank count its numbers
-    # measure oversubscription rather than scaling — recorded in the file itself,
-    # because a reader six months from now will not remember the core count.
-    HYBRID_FITS=$(( MAX_WORKERS / SCALING_THREADS ))
-
+    # one step earlier than the pure row does ($MAX_WORKERS / SCALING_THREADS
+    # ranks). Past that point its numbers measure oversubscription rather than
+    # scaling — every CSV row still carries its own ranks/threads, though, so
+    # that boundary is a filter on the data, not something that has to be
+    # written down here for a reader to reconstruct later.
     echo ""
     echo "======== [5/7] Strong scaling: ranks =${SCALING_RANKS} ==================="
-    SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.txt"
-    {
-        echo "Strong scaling sweep — fixed problem, increasing ranks"
-        echo "  machine        : ${PHYSICAL_CORES} physical cores, ${MAX_WORKERS} usable"
-        echo "  rank counts    :${SCALING_RANKS}"
-        echo "  threads/rank   : 1 (MPI pure row) and ${SCALING_THREADS} (hybrid row)"
-        echo "  workloads      :${SCALING_DURATIONS} s of audio (one curve each)"
-        echo "  honest up to   : ${HYBRID_FITS} ranks for the hybrid row,"
-        echo "                   ${MAX_WORKERS} ranks for the MPI pure row;"
-        echo "                   beyond that the workers exceed the cores."
-    } > "${SCALEFILE}"
+    SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.csv"
+    : > "${SCALEFILE}"
 
     for DURATION in ${SCALING_DURATIONS}; do
     for P in ${SCALING_RANKS}; do
-        hybrid_workers=$(( P * SCALING_THREADS ))
-        fit_note=""
-        [ "${hybrid_workers}" -gt "${MAX_WORKERS}" ] && fit_note="  [hybrid oversubscribed]"
-        {
-            echo ""
-            echo "════════ ${DURATION}s · -np ${P}: pure ${P}x1 = ${P} workers, hybrid ${P}x${SCALING_THREADS} = ${hybrid_workers} workers${fit_note}"
-        } | tee -a "${SCALEFILE}"
+        echo "  ${DURATION}s · -np ${P}"
 
         # Fixed problem size across the sweep — that is what makes it STRONG
         # scaling — and the same repetitions and geometry as every other section.
-        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+        csv_append "${SCALEFILE}" \
+            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${DURATION}" scatter \
-            2>&1 | tee -a "${SCALEFILE}"
+            ${BENCH_ARGS} "${DURATION}" scatter
         note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
     done
     done
@@ -404,7 +402,6 @@ fi
 # 1.00x. Whatever it reads instead is this machine's noise floor, measured for
 # free — a number worth knowing before trusting any other row in the file.
 if [ "${THREAD_SCALING:-1}" != "0" ]; then
-    SMT_POINT=""
     if [ -z "${THREAD_LIST:-}" ]; then
         THREAD_LIST=$(sweep_list "${AVAILABLE_CORES}")
 
@@ -413,41 +410,29 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
         # SLURM allocation, where the budget is expressed in cores and the extra
         # threads would land on cores belonging to somebody else.
         if [ -z "${BATCH_CORES}" ] && [ "${LOGICAL_CPUS}" -gt "${AVAILABLE_CORES}" ]; then
-            SMT_POINT=${LOGICAL_CPUS}
             THREAD_LIST="${THREAD_LIST} ${LOGICAL_CPUS}"
         fi
     fi
 
     echo ""
     echo "======== [6/7] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
-    THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.txt"
-    {
-        echo "OpenMP thread scaling — one process, no MPI, fixed problem"
-        echo "  machine        : ${PHYSICAL_CORES} physical cores, ${LOGICAL_CPUS} logical"
-        echo "  thread counts  :${THREAD_LIST}"
-        echo "  workloads      :${SCALING_DURATIONS} s of audio (one curve each)"
-        echo "  how to read    : each run prints its own 1-thread baseline, so the"
-        echo "                   speedup column is already the scaling factor;"
-        echo "                   divide by the thread count for the efficiency."
-        [ -n "${SMT_POINT}" ] && \
-        echo "  note           : ${SMT_POINT} threads exceeds the ${PHYSICAL_CORES} physical cores;"
-        [ -n "${SMT_POINT}" ] && \
-        echo "                   that point measures the SMT contribution, not new cores."
-    } > "${THREADFILE}"
+    THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.csv"
+    : > "${THREADFILE}"
 
     for DURATION in ${SCALING_DURATIONS}; do
     for T in ${THREAD_LIST}; do
-        smt_note=""
-        [ "${T}" -gt "${PHYSICAL_CORES}" ] && smt_note="  [SMT: beyond ${PHYSICAL_CORES} physical cores]"
-        {
-            echo ""
-            echo "════════ ${DURATION}s · OMP_NUM_THREADS=${T}${smt_note}"
-        } | tee -a "${THREADFILE}"
+        echo "  ${DURATION}s · OMP_NUM_THREADS=${T}"
 
-        OMP_NUM_THREADS=${T} \
+        # benchmark_Main re-reads OMP_NUM_THREADS at startup and writes its own
+        # 1-thread baseline in the same row set, so every point of the sweep is
+        # self-baselined: `speedup` never depends on a number measured minutes
+        # earlier under different load. At T=1 the two rows are the same
+        # computation, so speedup should read 1.00 — whatever it reads instead
+        # is this machine's noise floor, measured for free.
+        csv_append "${THREADFILE}" \
+            env OMP_NUM_THREADS=${T} \
             "${BUILD_DIR}/benchmarks/benchmark_Main" \
-            ${BENCH_ARGS} "${DURATION}" \
-            2>&1 | tee -a "${THREADFILE}"
+            ${BENCH_ARGS} "${DURATION}"
         note_status "${PIPESTATUS[0]}" "threads-${T}-${DURATION}s"
     done
     done
@@ -467,28 +452,18 @@ if [ "${WEAK_SCALING:-1}" != "0" ]; then
     WEAK_BASE=${WEAK_BASE:-5}          # seconds of audio per rank
     echo ""
     echo "======== [7/7] Weak scaling: ${WEAK_BASE}s of audio per rank ============="
-    WEAKFILE="${RESULTS_DIR}/${PREFIX}_weak_scaling.txt"
-    {
-        echo "Weak scaling sweep — audio grows with the rank count"
-        echo "  per-rank load  : ${WEAK_BASE} s of audio, held constant"
-        echo "  rank counts    :${SCALING_RANKS}"
-        echo "  threads/rank   : 1"
-        echo "  how to read    : the execution time should stay FLAT; the slope"
-        echo "                   that appears is communication plus serial work."
-    } > "${WEAKFILE}"
+    WEAKFILE="${RESULTS_DIR}/${PREFIX}_weak_scaling.csv"
+    : > "${WEAKFILE}"
     export OMP_NUM_THREADS=1
 
     for P in ${SCALING_RANKS}; do
         DUR=$(( WEAK_BASE * P ))
-        {
-            echo ""
-            echo "════════ weak · -np ${P} · ${DUR}s of audio (${WEAK_BASE}s per rank)"
-        } | tee -a "${WEAKFILE}"
+        echo "  -np ${P} · ${DUR}s of audio (${WEAK_BASE}s per rank)"
 
-        mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+        csv_append "${WEAKFILE}" \
+            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${DUR}" scatter \
-            2>&1 | tee -a "${WEAKFILE}"
+            ${BENCH_ARGS} "${DUR}" scatter
         note_status "${PIPESTATUS[0]}" "weak-np${P}"
     done
 fi

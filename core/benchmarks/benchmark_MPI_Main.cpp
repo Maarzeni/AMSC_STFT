@@ -4,25 +4,33 @@
  *
  * @details
  * Benchmarks MPI_STFTAnalyzer<IterativeFFT, HannWindow> on a long signal,
- * comparing three configurations measured in the SAME run:
+ * comparing three configurations measured in the SAME run (section "mpi",
+ * kind = "timing" — see the schema documented in benchmark_Suite.hpp):
  *
  *   - serial     : root rank only, 1 thread, no distribution — the baseline
  *   - MPI pure   : 1 OpenMP thread per rank
  *   - hybrid     : all available OpenMP threads per rank
  *
  * Both parallel rows report their speedup over the serial row of the same
- * workload, so the speedup column is a parallel speedup in the usual sense and
+ * workload, so `speedup` is a parallel speedup in the usual sense and
  * dividing it by the number of cores in use (ranks x threads) gives the
- * efficiency directly.  The gain of the threads over the processes, which
- * earlier versions printed instead, is the ratio of the two speedups.
+ * efficiency directly. The gain of the threads over the processes is the
+ * ratio of the two speedups.
  *
  * Wall-clock time per repetition is the time of the SLOWEST rank
  * (MPI_Reduce with MPI_MAX), since that is what bounds the collective.
- * Only the root rank prints results.
+ * Only the root rank writes rows.
  *
- * A second table reports the per-rank memory footprint under both input
- * distribution strategies (see Distribution in MPI_STFTAnalyzer.hpp), which is
- * what the broadcast-vs-scatter change is actually about.
+ * Two more row kinds report the per-rank memory footprint (see Distribution
+ * in MPI_STFTAnalyzer.hpp), which is what the broadcast-vs-scatter change is
+ * actually about:
+ *
+ *   - memory_analytic : how many input samples one rank holds under EACH
+ *                        strategy, at every workload — exact arithmetic, so
+ *                        both strategies come out of a single run.
+ *   - memory_rss       : measured peak resident memory (VmHWM), one row for
+ *                        the whole run, belonging to the single strategy
+ *                        this process was launched with (see below for why).
  *
  * Usage:
  *   mpirun -np <P> ./benchmark_MPI_Main [reps] [warmup] [frame] [hop] [seconds] [strategy]
@@ -38,21 +46,21 @@
  * companion script scripts/run_suite.sh, which launches this binary once per
  * rank count.
  *
- * ─── Why one strategy per process ───────────────────────────────────────────
- * VmHWM is a high-water mark over the whole process lifetime: it never falls,
- * so a process that ran the broadcast first would carry that peak into the
- * scatter's measurement and report the two as equal.  No ordering fixes this
- * (the sweep contaminates it a second time, since a later workload raises the
- * mark recorded for every earlier one).  The measured peak is therefore
- * attributed to the single strategy the process was launched with, and the
- * before/after comparison is two runs:
+ * Output is CSV on stdout, nothing else — see benchmark_Suite.hpp.
+ *
+ * @par Why one strategy per process
+ * VmHWM is a high-water mark over the whole process lifetime: it never
+ * falls, so a process that ran the broadcast first would carry that peak
+ * into the scatter's measurement and report the two as equal. The measured
+ * peak is therefore attributed to the single strategy the process was
+ * launched with; comparing the two takes two runs:
  *
  *   mpirun -np 4 ./benchmark_MPI_Main 7 2 1024 512 30 bcast
  *   mpirun -np 4 ./benchmark_MPI_Main 7 2 1024 512 30 scatter
  *
  * The analytic footprint has no such problem — it is arithmetic, not a
- * measurement — so that table shows both strategies at every workload in a
- * single run.
+ * measurement — so that row kind reports both strategies at every workload
+ * in a single run.
  *
  * Only std::chrono + STL + project code (+ MPI) are used.
  */
@@ -70,7 +78,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -84,7 +91,7 @@ using namespace stft;
 
 namespace {
 
-// ── Memory instrumentation ───────────────────────────────────────────────────
+// ─── Memory instrumentation ───────────────────────────────────────────────────
 
 /**
  * @brief Peak resident set size of this process in KiB, 0 if not measurable.
@@ -96,8 +103,8 @@ namespace {
  * process — see the note at the top of the file.
  *
  * /proc/self/status is Linux-only, which is where the cluster and the CI run.
- * Elsewhere this returns 0 and the table prints "n/a" rather than a wrong
- * number: the analytic section above it stays valid on every platform.
+ * Elsewhere this returns 0 and the memory_rss row is written with its MiB
+ * fields blank rather than a wrong number.
  */
 double peakRssKiB() {
 #if defined(__linux__)
@@ -138,43 +145,34 @@ Spread reduceSpread(const MPIContext& ctx, double local) {
     return s;
 }
 
-// ── Printing (same widths and style as the bench:: table helpers) ────────────
-
-void printMemoryHeader() {
-    std::cout << std::left  << std::setw(26) << "Distribution @ workload"
-              << std::right << std::setw(12) << "Frames"
-              << std::setw(14) << "samples MIN"
-              << std::setw(14) << "samples MAX"
-              << std::setw(14) << "samples AVG"
-              << std::setw(14) << "MiB AVG" << "\n"
-              << std::string(94, '-') << "\n";
-}
-
-void printMemoryRow(const std::string& label,
-                    std::size_t        frames,
-                    const Spread&      samples) {
+void writeAnalyticRow(const std::string& strategy, int ranks,
+                      std::size_t frames, double workloadS,
+                      const Spread& samplesHeld) {
     constexpr double kSampleMiB = sizeof(double) / (1024.0 * 1024.0);
-    std::cout << std::left  << std::setw(26) << label
-              << std::right << std::setw(12) << frames
-              << std::fixed << std::setprecision(0)
-              << std::setw(14) << samples.min
-              << std::setw(14) << samples.max
-              << std::setw(14) << samples.avg
-              << std::setprecision(2)
-              << std::setw(14) << (samples.avg * kSampleMiB) << "\n";
+    bench::Row r;
+    r.kind = "memory_analytic";
+    r.strategy = strategy;
+    r.ranks = ranks;
+    r.frames = static_cast<long long>(frames);
+    r.workloadS = workloadS;
+    r.minMib = samplesHeld.min * kSampleMiB;
+    r.maxMib = samplesHeld.max * kSampleMiB;
+    r.avgMib = samplesHeld.avg * kSampleMiB;
+    bench::writeRow(std::cout, r);
 }
 
-void printPeakRss(const std::string& label, const Spread& kib, bool measurable) {
-    std::cout << std::left << std::setw(26) << label;
-    if (!measurable) {
-        std::cout << std::right << std::setw(14) << "n/a"
-                  << std::setw(14) << "n/a" << std::setw(14) << "n/a" << "\n";
-        return;
+void writeRssRow(const std::string& strategy, int ranks,
+                 const Spread& kib, bool measurable) {
+    bench::Row r;
+    r.kind = "memory_rss";
+    r.strategy = strategy;
+    r.ranks = ranks;
+    if (measurable) {
+        r.minMib = kib.min / 1024.0;
+        r.maxMib = kib.max / 1024.0;
+        r.avgMib = kib.avg / 1024.0;
     }
-    std::cout << std::right << std::fixed << std::setprecision(2)
-              << std::setw(14) << (kib.min / 1024.0)
-              << std::setw(14) << (kib.max / 1024.0)
-              << std::setw(14) << (kib.avg / 1024.0) << "\n";
+    bench::writeRow(std::cout, r);
 }
 
 int maxThreads() {
@@ -246,7 +244,7 @@ int main(int argc, char** argv) {
     // Workload sweep, expressed as seconds of audio.  A single measurement at
     // one problem size says nothing about scaling: what matters is how the
     // hybrid gain evolves as the number of frames grows, the same way the FFT
-    // table sweeps transform sizes.  Passing a duration on the command line
+    // section sweeps transform sizes.  Passing a duration on the command line
     // collapses the sweep to that single point.
     std::vector<double> durations = {1.0, 5.0, 10.0, 30.0};
     if (argc >= 6) durations = { std::max(0.1, std::atof(argv[5])) };
@@ -284,7 +282,7 @@ int main(int argc, char** argv) {
     MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(ctx, frame, hop, SR, dist);
 
     // Same engine the analyzer composes, driven directly on the root rank: the
-    // serial baseline of the table below.  Constructed once, like the analyzer,
+    // serial baseline of the rows below. Constructed once, like the analyzer,
     // since only the signal handed to it changes across the sweep.
     STFTAnalyzer<IterativeFFT, HannWindow> serialEngine(frame, hop, SR);
 
@@ -293,22 +291,9 @@ int main(int argc, char** argv) {
     // setThreads(1) the real per-rank core count is no longer readable.
     const int nThreads = maxThreads();
 
-    if (ctx.isRoot()) {
-        std::cout << "AMSC_STFT Benchmark Suite (MPI / hybrid)\n"
-                  << "  ranks        : " << ctx.size() << "\n"
-                  << "  threads/rank : up to " << nThreads << "\n"
-                  << "  repetitions  : " << reps << "  (warmup " << warmup << ")\n"
-                  << "  frame / hop  : " << frame << " / " << hop << " samples\n"
-                  << "  distribution : " << distName << "\n"
-                  << "  workloads    : ";
-        for (std::size_t i = 0; i < durations.size(); ++i)
-            std::cout << durations[i]
-                      << (i + 1 < durations.size() ? ", " : " s of audio\n");
-        bench::printSectionTitle(
-            "Distributed STFT (MPI_STFTAnalyzer<IterativeFFT, HannWindow>)");
-        bench::printTableHeader();
-    }
+    if (ctx.isRoot()) bench::writeHeader(std::cout);
 
+    // ─── Distributed STFT: serial / MPI pure / hybrid ──────────────────────
     for (const double sec : durations) {
         const std::size_t signalLen =
             static_cast<std::size_t>(sec * static_cast<double>(SR));
@@ -331,17 +316,11 @@ int main(int argc, char** argv) {
         };
 
         // Serial reference: the root rank alone, one thread, no distribution at
-        // all.  The other ranks fall through the lambda and wait in the barrier
-        // that measureMPI puts before each timed region, so the MPI_MAX over the
-        // per-rank times is root's serial time.
-        //
-        // Measuring it here rather than reading it off benchmark_Main matters:
-        // the baseline then comes from the same binary, the same allocation and
-        // the same repetitions as the rows it is compared against, which is what
-        // makes the speedup column a speedup rather than a ratio between two
-        // separate runs.  It costs one serial pass per workload, P times the
-        // work of the row below it — negligible in absolute terms, and the price
-        // of a baseline that is actually comparable.
+        // all. The other ranks fall through the lambda and wait in the barrier
+        // that measureMPI puts before each timed region, so the MPI_MAX over
+        // the per-rank times is root's serial time. Measured here, in the same
+        // binary and run as the rows compared against it, so `speedup` is an
+        // honest ratio rather than a comparison against a separate program.
         auto runSerial = [&]{
             if (!ctx.isRoot()) return;
             const SpectrogramData out = serialEngine.analyze(signal);
@@ -353,104 +332,65 @@ int main(int argc, char** argv) {
 
         const bench::Stats sSerial = measureMPI(ctx, warmup, reps, runSerial);
         if (ctx.isRoot())
-            bench::printRow("serial (1 rank, 1 thr)", frames, sSerial);
+            bench::writeTiming(std::cout, "mpi", "serial (1 rank, 1 thr)", 1, 1,
+                               nThreads, std::nullopt,
+                               static_cast<long long>(frames), sec, sSerial);
 
         // MPI pure: 1 thread per rank
         const bench::Stats sMPI = measureMPI(ctx, warmup, reps, runOnce);
         if (ctx.isRoot())
-            bench::printRow("MPI pure (1 thr/rank)", frames, sMPI, sSerial.mean);
+            bench::writeTiming(std::cout, "mpi", "MPI pure (1 thr/rank)", ctx.size(),
+                               1, nThreads, std::nullopt,
+                               static_cast<long long>(frames), sec, sMPI, sSerial.mean);
 
         // Hybrid: all threads per rank
         setThreads(nThreads);
         const bench::Stats sHybrid = measureMPI(ctx, warmup, reps, runOnce);
-        if (ctx.isRoot()) {
-            bench::printRow("hybrid (" + std::to_string(nThreads) + " thr/rank)",
-                            frames, sHybrid, sSerial.mean);
-            std::cout << "\n";
-        }
+        if (ctx.isRoot())
+            bench::writeTiming(std::cout, "mpi",
+                               "hybrid (" + std::to_string(nThreads) + " thr/rank)",
+                               ctx.size(), nThreads, nThreads, std::nullopt,
+                               static_cast<long long>(frames), sec, sHybrid, sSerial.mean);
     }
 
     // ── Memory: analytic ────────────────────────────────────────────────────
     // How many input samples each rank has to hold is exact arithmetic on the
     // frame layout, not a measurement, so both strategies can be reported side
     // by side from a single run without either disturbing the other.
-    if (ctx.isRoot()) {
-        bench::printSectionTitle("Per-rank input footprint (analytic)");
-        printMemoryHeader();
-    }
-
     for (const double sec : durations) {
         const std::size_t signalLen =
             static_cast<std::size_t>(sec * static_cast<double>(SR));
         const std::size_t frames =
             STFTAnalyzer<IterativeFFT, HannWindow>::numFrames(signalLen, frame, hop);
 
-        if (frames == 0) continue;   // skipped above too, keep the tables aligned
+        if (frames == 0) continue;   // skipped above too, for the same reason
 
         // Broadcast: the whole signal lands on every rank, whatever P is.
         const Spread bcastHeld = reduceSpread(ctx, static_cast<double>(signalLen));
 
         // Scatter: only the samples this rank's own frames read.  Asked of the
-        // analyzer rather than recomputed here, so the table cannot drift away
+        // analyzer rather than recomputed here, so the row cannot drift away
         // from the layout the scatter actually uses (the answer depends on the
         // frame geometry, not on which strategy the analyzer was built with).
         const Spread scatterHeld = reduceSpread(ctx,
             static_cast<double>(analyzer.localSampleCount(signalLen, ctx.rank())));
 
         if (ctx.isRoot()) {
-            std::ostringstream w;
-            w << std::fixed << std::setprecision(1) << sec << " s";
-            printMemoryRow("bcast   @ " + w.str(), frames, bcastHeld);
-            printMemoryRow("scatter @ " + w.str(), frames, scatterHeld);
+            writeAnalyticRow("bcast",   ctx.size(), frames, sec, bcastHeld);
+            writeAnalyticRow("scatter", ctx.size(), frames, sec, scatterHeld);
         }
     }
 
     // ── Memory: measured ────────────────────────────────────────────────────
-    // One process, one strategy, one high-water mark.  Reported once for the
+    // One process, one strategy, one high-water mark. Reported once for the
     // whole run: VmHWM cannot be attributed to an individual workload either,
     // since the mark left by the largest one covers all of them.
     const double myPeakKiB = peakRssKiB();
     const Spread peak       = reduceSpread(ctx, myPeakKiB);
     const Spread measurable = reduceSpread(ctx, myPeakKiB > 0.0 ? 1.0 : 0.0);
 
-    if (ctx.isRoot()) {
-        bench::printSectionTitle("Peak resident memory per rank (VmHWM, whole process)");
-        std::cout << std::left  << std::setw(26) << "Metric"
-                  << std::right << std::setw(14) << "MIN(MiB)"
-                  << std::setw(14) << "MAX(MiB)"
-                  << std::setw(14) << "AVG(MiB)" << "\n"
-                  << std::string(68, '-') << "\n";
-        printPeakRss("peak RSS (" + distName + ")", peak, measurable.min > 0.0);
-    }
-
-    if (ctx.isRoot()) {
-        std::cout << "\nNotes:\n"
-                  << "  - time per rep = slowest rank (MPI_MAX).\n"
-                  << "  - speedup is vs the serial row of the SAME workload;\n"
-                  << "    divide by ranks x threads for the efficiency, and\n"
-                  << "    divide the two speedups for the hybrid-vs-MPI gain.\n"
-                  << "  - the serial row is root alone, one thread, no scatter\n"
-                  << "    and no gather: the same code the analyzer composes.\n"
-                  << "  - each block is one workload; the frame count grows down\n"
-                  << "    the table, so the hybrid gain can be read against it.\n"
-                  << "  - vary -np across runs to read strong scaling; the serial\n"
-                  << "    row is the same at every -np, which is a useful check.\n"
-                  << "  - args: [reps] [warmup] [frame] [hop] [seconds] [strategy];\n"
-                  << "    giving [seconds] replaces the sweep with one workload.\n"
-                  << "  - the analytic table counts what the distribution forces a\n"
-                  << "    rank to hold.  Root also owns the source signal it read,\n"
-                  << "    under either strategy: the scatter changes what the other\n"
-                  << "    P-1 ranks must hold, not what the reader holds.  That is\n"
-                  << "    why the measured MAX barely moves and MIN/AVG do.\n"
-                  << "  - peak RSS covers the whole process, so it belongs to the\n"
-                  << "    one strategy this run used.  For before/after, run twice:\n"
-                  << "      mpirun -np <P> ./benchmark_MPI_Main <reps> <warmup> "
-                  << frame << " " << hop << " 30 bcast\n"
-                  << "      mpirun -np <P> ./benchmark_MPI_Main <reps> <warmup> "
-                  << frame << " " << hop << " 30 scatter\n"
-                  << "  - VmHWM is Linux-only; elsewhere the row reads n/a and only\n"
-                  << "    the analytic table is available.\n";
-    }
+    if (ctx.isRoot())
+        writeRssRow(distName, ctx.size(), peak, measurable.min > 0.0);
 
     return 0;
 }

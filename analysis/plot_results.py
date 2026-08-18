@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Parallel-performance figures for the AMSC_STFT report.
 
-Reads only results/csv/timings.csv and memory.csv — never the text tables — so a
-change to the C++ printing is absorbed by parse_results.py and never reaches a
-figure.
+Reads only results/analysis/csv/timings.csv and memory.csv — never the raw
+benchmark output — so a change to the C++ output format only ever requires a
+fix in parse_results.py, never here.
 
-    python3 analysis/parse_results.py results/raw/*/ -o results/csv/
-    python3 analysis/plot_results.py --csv results/csv/ --out results/figures/
+    python3 analysis/parse_results.py results/raw/*/ -o results/analysis/csv/
+    python3 analysis/plot_results.py --csv results/analysis/csv/ --out results/analysis/figures/
 
   1  fft_algorithms  FFT algorithms as OpenMP threads grow — time AND speedup
   2  stft_openmp     STFT on OpenMP alone (1 MPI rank), speedup
@@ -29,10 +29,9 @@ not ranks: with a fixed thread count the honest reference has to count the
 threads too, otherwise the measured curve would sail past "ideal" by design.
 
 Flags: --machine NAME (repeatable) · --stat min|median|mean · --only a,b
-       --format pdf,png
 
-Every figure writes a .csv beside it with the numbers plotted.
-Requires matplotlib only — no pandas, so it runs in the course container.
+Writes one PNG per figure. Requires matplotlib only — no pandas, so it runs
+in the course container.
 """
 
 from __future__ import annotations
@@ -86,10 +85,9 @@ def load(path: Path) -> list[dict]:
         for k, v in list(r.items()):
             if v == "":
                 r[k] = None
-            elif k in ("ranks", "threads", "omp_threads", "workers", "size",
-                       "frames"):
+            elif k in ("ranks", "threads", "omp_threads", "size", "frames"):
                 r[k] = int(float(v))
-            elif k.endswith(("_ms", "_mib", "_s")) or k == "speedup_reported":
+            elif k.endswith(("_ms", "_mib", "_s")) or k == "speedup":
                 r[k] = float(v)
     return rows
 
@@ -117,18 +115,18 @@ def curves_by_size(rows, machine, stat, section, keep, worker_of, source=None):
             continue
         if source is not None and r.get("source") != source:
             continue
-        v, size, t = r["variant"], r["size"], r[stat]
+        v, frames, t = r["variant"], r["frames"], r[stat]
         if v.startswith("serial") or "1 thread" in v:
-            if size not in serial or t < serial[size]:
-                serial[size] = t
+            if frames not in serial or t < serial[frames]:
+                serial[frames] = t
             continue
         if not keep(r):
             continue
         w = worker_of(r)
         if not w:
             continue
-        prev = data[size].get(w)
-        data[size][w] = t if prev is None else min(prev, t)
+        prev = data[frames].get(w)
+        data[frames][w] = t if prev is None else min(prev, t)
     return data, serial
 
 
@@ -161,20 +159,15 @@ def sort_key_factory(order):
     return key
 
 
-def finish(fig, out: Path, formats, header, table):
+def finish(fig, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
-    for fmt in formats:
-        fig.savefig(out.with_suffix(f".{fmt}"))
+    fig.savefig(out.with_suffix(".png"))
     plt.close(fig)
-    with out.with_suffix(".csv").open("w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(header)
-        w.writerows(table)
-    print(f"  wrote {out.name}: {', '.join(formats)} + csv")
+    print(f"  wrote {out.with_suffix('.png').name}")
 
 
-def scaling_figure(series, baselines, title, params, xlabel, out, formats,
-                   header, colors=None, ideal_factor=1, with_time=False,
+def scaling_figure(series, baselines, title, params, xlabel, out,
+                   colors=None, ideal_factor=1, with_time=False,
                    time_label="execution time [ms]"):
     """Speedup against an ideal line; optionally an execution-time panel above."""
     series = {k: v for k, v in series.items() if len(v) >= 2}
@@ -193,7 +186,7 @@ def scaling_figure(series, baselines, title, params, xlabel, out, formats,
     fig.subplots_adjust(right=0.74)
 
     order = list(colors or {})
-    all_x, table = set(), []
+    all_x = set()
     for i, (label, pts) in enumerate(sorted(series.items(),
                                             key=sort_key_factory(order))):
         xs = sorted(pts)
@@ -210,8 +203,6 @@ def scaling_figure(series, baselines, title, params, xlabel, out, formats,
             ax_t.plot(xs, [pts[x] for x in xs], color=colour, marker="o",
                       markeredgecolor="white", markeredgewidth=1.2,
                       label=label, zorder=3)
-        table += [[label, x, round(pts[x], 3), round(s, 3)]
-                  for x, s in zip(xs, sp)]
 
     xs = sorted(all_x)
     ideal = [x * ideal_factor for x in xs]
@@ -237,7 +228,7 @@ def scaling_figure(series, baselines, title, params, xlabel, out, formats,
         ax_s.set_title(title, color=INK, loc="left", fontsize=12.5, pad=12)
 
     param_box(fig, params)
-    finish(fig, out, formats, header, table)
+    finish(fig, out)
 
 
 # ── Figures ─────────────────────────────────────────────────────────────────
@@ -250,7 +241,7 @@ def workload_params(frames_seen):
             ("frames", " / ".join(str(f) for f in sorted(frames_seen)))]
 
 
-def fig_fft(rows, machine, stat, out, formats):
+def fig_fft(rows, machine, stat, out):
     per_algo: dict[str, dict[int, float]] = defaultdict(dict)
     sizes = {r["size"] for r in rows
              if r["machine"] == machine and r["section"] == "fft"
@@ -282,12 +273,11 @@ def fig_fft(rows, machine, stat, out, formats):
               ("", "their time")]
     scaling_figure(per_algo, None,
                    "FFT algorithms: scaling with OpenMP threads",
-                   params, "OpenMP threads", out, formats,
-                   ["algorithm", "threads", stat, "speedup"],
+                   params, "OpenMP threads", out,
                    colors=ALGO_COLOR, with_time=True)
 
 
-def fig_stft(rows, machine, stat, out, formats, mode):
+def fig_stft(rows, machine, stat, out, mode):
     if mode == "openmp":
         section = "stft"
         keep = lambda r: r["variant"].startswith("STFT OpenMP")   # noqa: E731
@@ -340,13 +330,11 @@ def fig_stft(rows, machine, stat, out, formats, mode):
                ("frame / hop", f"{FRAME} / {HOP}"),
                ("sample rate", f"{RATE / 1000:g} kHz")]
               + workload_params(set(data)) + extra)
-    scaling_figure(series, bases, title, params, xlabel, out, formats,
-                   ["workload", "ranks" if mode != "openmp" else "threads",
-                    stat, "speedup"],
+    scaling_figure(series, bases, title, params, xlabel, out,
                    ideal_factor=factor)
 
 
-def fig_memory(mem, machine, out, formats):
+def fig_memory(mem, machine, out):
     """Mean per-rank footprint, one bar pair per rank count.
 
     The mean is the statistic that answers what the scatter exists to answer —
@@ -356,7 +344,7 @@ def fig_memory(mem, machine, out, formats):
     """
     rss = defaultdict(dict)
     for r in mem:
-        if r["machine"] == machine and r["kind"] == "rss" and r.get("ranks"):
+        if r["machine"] == machine and r["kind"] == "memory_rss" and r.get("ranks"):
             rss[r["strategy"]][r["ranks"]] = r["avg_mib"]
     if not {"bcast", "scatter"} <= set(rss):
         print(f"  skip memory: need both strategies measured for {machine}")
@@ -369,7 +357,7 @@ def fig_memory(mem, machine, out, formats):
 
     fig, ax = plt.subplots(figsize=(9.0, 4.8))
     fig.subplots_adjust(right=0.74)
-    width, xs, table = 0.34, range(len(ranks)), []
+    width, xs = 0.34, range(len(ranks))
     for i, (key, label) in enumerate((("bcast", "broadcast"),
                                       ("scatter", "scatter"))):
         vals = [rss[key][p] for p in ranks]
@@ -377,7 +365,6 @@ def fig_memory(mem, machine, out, formats):
         bars = ax.bar(offs, vals, width, label=label,
                       color=STRATEGY_COLOR[label], zorder=3)
         ax.bar_label(bars, fmt="%.0f", padding=3, fontsize=8.5, color=INK_SOFT)
-        table += [[label, p, round(v, 2)] for p, v in zip(ranks, vals)]
 
     ax.set_xticks(list(xs))
     ax.set_xticklabels([str(p) for p in ranks])
@@ -403,17 +390,17 @@ def fig_memory(mem, machine, out, formats):
                     ("", "the root holds"),
                     ("", "what it read under"),
                     ("", "either strategy")])
-    finish(fig, out, formats, ["strategy", "ranks", "mean_mib"], table)
+    finish(fig, out)
 
 
-def fig_weak(rows, machine, stat, out, formats):
+def fig_weak(rows, machine, stat, out):
     """Constant work per rank: the time should stay flat, the efficiency at 1.
 
     Speedup is meaningless here — the problem is not fixed — so this figure
     plots the time itself and the weak-scaling efficiency t(1)/t(P), which is
     the fraction of the ideal flat line that survives.
     """
-    pts, base = {}, None
+    pts = {}
     for r in rows:
         if (r["machine"] != machine or r.get("source") != "weak_scaling"
                 or r["section"] != "mpi"):
@@ -473,25 +460,22 @@ def fig_weak(rows, machine, stat, out, formats):
                     ("", "perfect weak"),
                     ("", "scaling; the slope"),
                     ("", "is communication")])
-    finish(fig, out, formats, ["ranks", stat, "efficiency"],
-           [[p, round(t, 3), round(e, 3)] for p, t, e in zip(xs, times, eff)])
+    finish(fig, out)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv", type=Path, default=Path("results/csv"))
-    ap.add_argument("--out", type=Path, default=Path("results/figures"))
+    ap.add_argument("--csv", type=Path, default=Path("results/analysis/csv"))
+    ap.add_argument("--out", type=Path, default=Path("results/analysis/figures"))
     ap.add_argument("--machine", action="append", default=None)
     ap.add_argument("--stat", default="min", choices=["min", "median", "mean"])
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
                          "stft_hybrid, memory, weak")
-    ap.add_argument("--format", default="pdf,png")
     args = ap.parse_args()
 
     stat = f"{args.stat}_ms"
-    formats = [f.strip() for f in args.format.split(",") if f.strip()]
     wanted = ({w.strip() for w in args.only.split(",")} if args.only else
               {"fft_algorithms", "stft_openmp", "stft_mpi", "stft_hybrid",
                "memory", "weak"})
@@ -510,20 +494,17 @@ def main() -> int:
     for m in machines:
         print(f"[{m}]")
         if "fft_algorithms" in wanted:
-            fig_fft(timings, m, stat, args.out / f"{m}_1_fft_algorithms", formats)
+            fig_fft(timings, m, stat, args.out / f"{m}_1_fft_algorithms")
         if "stft_openmp" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_2_stft_openmp",
-                     formats, "openmp")
+            fig_stft(timings, m, stat, args.out / f"{m}_2_stft_openmp", "openmp")
         if "stft_mpi" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_3_stft_mpi",
-                     formats, "mpi")
+            fig_stft(timings, m, stat, args.out / f"{m}_3_stft_mpi", "mpi")
         if "stft_hybrid" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_4_stft_hybrid",
-                     formats, "hybrid")
+            fig_stft(timings, m, stat, args.out / f"{m}_4_stft_hybrid", "hybrid")
         if "memory" in wanted:
-            fig_memory(memory, m, args.out / f"{m}_5_memory", formats)
+            fig_memory(memory, m, args.out / f"{m}_5_memory")
         if "weak" in wanted:
-            fig_weak(timings, m, stat, args.out / f"{m}_6_weak_scaling", formats)
+            fig_weak(timings, m, stat, args.out / f"{m}_6_weak_scaling")
     return 0
 
 
