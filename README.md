@@ -146,17 +146,13 @@ core/
 | MPI | `find_package(MPI REQUIRED)` — OpenMPI is what we use |
 | Network access on first configure | GoogleTest v1.14.0 is fetched from GitHub by `FetchContent` |
 
-The instructions below assume you are working **inside a Docker container that already provides this toolchain** — a Linux image with a C++20 compiler, CMake, OpenMP and an MPI implementation installed. Once such a container exists, entering it is a single command:
-
-```bash
-docker start -ai <container-name>
-```
-
-If you prefer to build directly on your machine, the Debian/Ubuntu package names are listed in `system-deps.txt`:
+Install the Debian/Ubuntu packages listed in `system-deps.txt`:
 
 ```bash
 cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
 ```
+
+CMake checks the compiler version itself and stops with a readable message if it is too old for C++20, rather than failing deep inside a standard header. The first `cmake` also needs the network access noted in the table above: GoogleTest is not an apt package, it is fetched from GitHub the first time the project is configured.
 
 ### Build
 

@@ -5,6 +5,22 @@ project(AMSC_STFT VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# CMAKE_CXX_STANDARD only asks the compiler to enable C++20; it does not check
+# that the compiler is new enough to actually support the subset this project
+# uses (<concepts>, <numbers>, CRTP with concept-constrained members). Below
+# the versions here, that shows up as a wall of unrelated-looking errors deep
+# inside a standard header instead of one readable message at configure time.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11)
+    message(FATAL_ERROR
+        "GCC >= 11 is required for the C++20 features this project uses "
+        "(concepts, <numbers>); found GCC ${CMAKE_CXX_COMPILER_VERSION}. "
+        "Ubuntu 22.04 and later ship a new enough GCC by default.")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
+    message(FATAL_ERROR
+        "Clang >= 14 is required for the C++20 features this project uses "
+        "(concepts, <numbers>); found Clang ${CMAKE_CXX_COMPILER_VERSION}.")
+endif()
+
 # Generate compile_commands.json for IDE support and autocompletion
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

@@ -1,21 +1,17 @@
-# System (apt) packages required to build and run the C++ project.
+# System (apt) packages needed to build and run AMSC_STFT natively.
+# Not a pip file — see analysis/requirements.txt for the Python-side deps.
 #
-# Consumed by Singularity.def and by the CI workflow as:
-#     cat system-deps.txt | grep -v '^#' | xargs apt-get install -y
-# so every entry must be a bare Debian/Ubuntu package name, one per line.
+#   cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
 #
-# NOT a pip list: see analysis/requirements.txt for the Python side.
-# Not needed at all when working inside the container, which already has all
-# of this baked in.
+# See the README ("Getting Started" → "Requirements") for the compiler
+# version and network-access notes this list doesn't cover.
 
 # Compilers and build tools
-
 build-essential
 cmake
 git
 
-# HPC libraries (High Performance Computing)
-
+# HPC libraries (OpenMP, MPI)
 libomp-dev
 openmpi-bin
 libopenmpi-dev
