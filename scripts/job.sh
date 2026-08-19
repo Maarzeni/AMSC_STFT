@@ -2,36 +2,27 @@
 #SBATCH --job-name=AMSC_STFT         ## Job name
 #SBATCH --output=amsc_stft_job.out   ## Standard output file
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
-#SBATCH --time=00:30:00              ## Maximum job duration
+#SBATCH --time=04:00:00              ## Maximum job duration
 #SBATCH --nodes=1                    ## Single node (see MPI note below)
-#SBATCH --ntasks=2                   ## MPI ranks for the distributed benchmark
-#SBATCH --cpus-per-task=2            ## OpenMP threads per rank (2 x 2 = 4 cores)
-#SBATCH --mem=4G                     ## Requested memory
-#SBATCH --partition=g100_all_serial  ## Default queue, usable without a budget
+#SBATCH --ntasks=8
+#SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
+#SBATCH --mem=32G
+#SBATCH --partition=g100_usr_prod
+#SBATCH --account=tra26_TRNPLM     ## re-check the name with `saldo -b`
 
-## ── Why the serial partition, and how to leave it ────────────────────────────
-## g100_all_serial runs on the shared LOGIN nodes and needs no budget, which is
-## why it works right now. Its QOS caps each user at 4 cores and ~30 GB, so the
-## 2x2 layout above is the largest that will be accepted: asking for more fails
-## at submission with "QOSMaxCpuPerUserLimit".
+## ── Resources ────────────────────────────────────────────────────────────────
+## Production partition on dedicated compute nodes, charged to tra26_TRNPLM.
+## `saldo -b` reports the project open until 2026-09-30 with 3728 of 6000
+## core-hours unspent, which is what makes g100_usr_prod accept the job: an
+## expired window is what used to answer "invalid account or expired budget".
 ##
-## Consequences worth knowing when reporting these numbers:
-##   * timings come from a node shared with every interactive user;
-##   * the scaling study is confined to 1..4 workers.
+## 8 ranks x 4 threads = 32 cores on one node. Walltime is four hours against
+## roughly one of measurement — a job killed at the limit loses every number it
+## had already taken, and the queue costs nothing extra for the margin.
 ##
-## Moving to dedicated compute nodes needs an account with an OPEN budget window.
-## As of 2026-08-12 `saldo -b` reports tra26_TRNPLM ending 2026-07-31 with 3728
-## of 6000 core-hours unspent: the budget is not exhausted, the project window
-## simply closed, which is what makes sbatch answer "expired budget". Once the
-## course PI has it extended (or a new account is granted), swap the three
-## resource lines above for the block below and nothing else needs to change —
-## TOTAL_CORES and `mpirun -np` both derive from these values.
-##
-##   #SBATCH --ntasks=8
-##   #SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
-##   #SBATCH --mem=32G
-##   #SBATCH --partition=g100_usr_prod
-##   #SBATCH --account=tra26_TRNPLM     ## re-check the name with `saldo -b`
+## Nothing here derives from the old serial-queue setup: TOTAL_CORES and
+## `mpirun -np` both read the SBATCH values above, and run_suite.sh sizes its
+## sweeps from the SLURM allocation.
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
@@ -80,9 +71,27 @@ mkdir -p "${RESULTS}"
 export SINGULARITYENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export SINGULARITYENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export SINGULARITYENV_PREFIX="cluster"
+
 export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"
+
+# The measurement configuration, matching scripts/job_mox.pbs so the two
+# clusters stay comparable. Without these the suite falls back to its light
+# defaults (7 repetitions, three durations, powers-of-two ranks), which is the
+# right choice for a laptop and the wrong one for 32 dedicated cores.
+BENCH_CONFIG_RANKS="1 2 4 6 8 10 12 14 16 20 24 28 32"
+BENCH_CONFIG_THREADS="1 2 4 6 8 10 12 14 16 20 24 32"
+for v in \
+    "BENCH_ARGS=15 3 1024 512" \
+    "SCALING_RANKS=${BENCH_CONFIG_RANKS}" \
+    "THREAD_LIST=${BENCH_CONFIG_THREADS}" \
+    "SCALING_DURATIONS=5 30 120 300" \
+    "MEM_DURATION=120" \
+    "WEAK_BASE=10"; do
+    export "SINGULARITYENV_${v}"
+    export "APPTAINERENV_${v}"
+done
 
 singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \
     bash "${SLURM_SUBMIT_DIR}/scripts/run_suite.sh"

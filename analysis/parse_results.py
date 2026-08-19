@@ -27,6 +27,11 @@ a row belongs to is decided by its own `kind` column (see
 core/benchmarks/benchmark_Suite.hpp): "timing" rows go to timings.csv,
 "memory_analytic" and "memory_rss" rows to memory.csv.
 
+Rows whose `kind` is not one of the schema's three values are dropped with a
+warning rather than filed somewhere: a shifted column means something wrote to
+the benchmark's stdout, and quietly routing the wreckage into memory.csv is how
+four figures once went missing without a single error message.
+
 Standard library only, on purpose: it has to run wherever the results do.
 """
 
@@ -69,6 +74,7 @@ def main() -> int:
                     help="output directory (default: results/results_analysis/csv/)")
     args = ap.parse_args()
 
+    unknown = 0
     timings: list[dict] = []
     memory: list[dict] = []
     seen = 0
@@ -84,7 +90,17 @@ def main() -> int:
             # is always the split point.
             machine, _, source = path.stem.partition("_")
             for row in read_rows(path, machine, source):
-                (timings if row.get("kind") == "timing" else memory).append(row)
+                kind = row.get("kind")
+                if kind == "timing":
+                    timings.append(row)
+                elif kind in ("memory_analytic", "memory_rss"):
+                    memory.append(row)
+                else:
+                    # Not a schema row: something else wrote to the benchmark's
+                    # stdout and shifted the columns. Counted and reported
+                    # rather than filed, so a corrupted sweep is loud instead
+                    # of turning into missing figures later.
+                    unknown += 1
             seen += 1
 
     if not timings and not memory:
@@ -103,6 +119,10 @@ def main() -> int:
             w.writerows(rows)
         print(f"{args.out / name}: {len(rows)} rows")
 
+    if unknown:
+        print(f"WARNING: {unknown} rows had an unrecognised 'kind' and were "
+              f"dropped — non-CSV output most likely leaked into a results "
+              f"file", file=sys.stderr)
     print(f"parsed {seen} files")
     return 0
 

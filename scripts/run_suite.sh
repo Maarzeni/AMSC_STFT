@@ -126,11 +126,26 @@ note_status() {  # note_status <exit code> <section name>
 # always the first stage of whichever pipeline runs.
 csv_append() {  # csv_append <file> <cmd...>
     local file=$1; shift
-    if [ -s "${file}" ]; then
-        "$@" 2>&1 | tail -n +2 | tee -a "${file}"
-    else
-        "$@" 2>&1 | tee -a "${file}"
-    fi
+    local want_header=1
+    [ -s "${file}" ] && want_header=0
+
+    # Only CSV reaches the file; everything reaches the console. The benchmarks
+    # print CSV and nothing else, but the ENVIRONMENT injects on the same
+    # stream — mpirun's "No protocol specified" X11 complaint is the one that
+    # keeps turning up, and unsetting DISPLAY does not stop it. Letting a
+    # stray line through is not cosmetic: it shifts every column of the rows
+    # after it and pushes whole sweeps into the wrong output file, which is
+    # exactly what happened before this filter existed.
+    #
+    # Data rows always start with a quoted "kind" field, the header with
+    # `kind,` — those two shapes are the whitelist. Errors still print to the
+    # job log, and PIPESTATUS[0] is still the benchmark's own exit code,
+    # because it remains the first stage of the pipeline.
+    "$@" 2>&1 | awk -v f="${file}" -v hdr="${want_header}" '
+        { print }
+        /^"/     { print >> f; next }
+        /^kind,/ { if (hdr) print >> f; next }
+    '
 }
 
 # Powers of two up to <max>, with <max> appended when it is not itself one, so a
