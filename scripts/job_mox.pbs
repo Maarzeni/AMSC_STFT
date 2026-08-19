@@ -17,15 +17,15 @@
 #PBS -N amsc_stft
 #PBS -q cpu
 #PBS -l select=1:ncpus=28:mpiprocs=28
-#PBS -l walltime=06:00:00
+#PBS -l walltime=01:30:00
 #PBS -j oe
 
 ## Resources: one node, 28 hardware threads, all usable as MPI slots.
 ## 28 is the ceiling, not a choice: `qstat -Qf cpu` reports resources_max.ncpus
 ## = 28, so a larger request is refused however idle the 112-thread nodes look.
-## Walltime, by contrast, is cheap — the queue allows 48 h — so it is set well
-## above the ~1 h the dense sweeps need: a job killed at the limit loses every
-## measurement it had already taken.
+## Walltime, by contrast, is cheap — the queue allows 48 h — so 90 minutes
+## against roughly 20 of measurement is pure insurance: a job killed at the
+## limit loses every number it had already taken.
 
 set -uo pipefail
 
@@ -75,9 +75,6 @@ fi
 # not by itself stop a program from using more, so for a scaling study the limit
 # has to be enforced by the code — which is what the suite does.
 #
-# 15 repetitions and up to 60 s of audio instead of the 7/30 defaults: a compute node
-# is quiet enough to deserve the extra statistics, and longer runs make a stray
-# interruption a smaller fraction of each measurement.
 # "mox-cpu" (the queue name), not plain "mox": the earlier login-node runs are
 # already labelled mox_*, and a compute-node measurement must never be averaged
 # together with one taken on a shared login node.
@@ -85,23 +82,26 @@ export PREFIX=mox-cpu
 export BUILD_DIR="${WORKDIR}/build"
 export RESULTS_DIR="${WORKDIR}/results/results_benchmark"
 export TEST_RESULTS_DIR="${WORKDIR}/results/results_test"
-export BENCH_ARGS="15 3 1024 512"
-# Every rank count up to the ceiling, not just powers of two: the interesting
-# part of a scaling curve is where it bends away from ideal, and powers of two
-# step straight over it. 14 points cost more runs but read as a curve.
-export SCALING_RANKS="1 2 4 6 8 10 12 14 16 18 20 22 24 28"
-export THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 28"
-
-# Four workloads spanning two orders of magnitude, the longest at five minutes
-# of audio (~25 800 frames). Short ones expose the fixed overhead, long ones
-# show what the implementation can do when the work per worker is generous.
-export SCALING_DURATIONS="5 30 120 300"
-export MEM_DURATION=120
-
-# Weak scaling: 10 s of audio per rank, so 28 ranks process 280 s. Constant work
-# per rank is the complement of the strong-scaling sweeps and the second half of
-# what a scaling study is expected to report.
-export WEAK_BASE=10
+# ── Measurement profile ──────────────────────────────────────────────────────
+# LIGHT by design. The dense alternative below runs for about three hours, and
+# more than half of that is the benchmark re-measuring its SERIAL baseline once
+# per block — a number that depends on neither the rank count nor the thread
+# count being swept. Cutting the sweep cuts that waste with it.
+#
+# Two workloads rather than four is also the better figure: two curves plus the
+# ideal line read at a glance, four turn a slide into spaghetti.
+#
+# Dense variant, for a final run when the results are settled (~3 h):
+#   BENCH_ARGS="15 3 1024 512"
+#   SCALING_RANKS="1 2 4 6 8 10 12 14 16 18 20 22 24 28"
+#   THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 28"
+#   SCALING_DURATIONS="5 30 120 300"; MEM_DURATION=120; WEAK_BASE=10
+export BENCH_ARGS="7 2 1024 512"
+export SCALING_RANKS="1 2 4 8 16 24 28"
+export THREAD_LIST="1 2 4 8 16 24 28"
+export SCALING_DURATIONS="15 120"
+export MEM_DURATION=60
+export WEAK_BASE=5
 
 bash "${PROJECT}/scripts/run_suite.sh"
 SUITE_STATUS=$?

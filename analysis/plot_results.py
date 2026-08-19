@@ -64,18 +64,26 @@ FRAME, HOP, RATE = 1024, 512, 44100
 
 
 def style() -> None:
+    """Sized for a projector, not for a screen at arm's length.
+
+    Every figure here is meant to be shown in a presentation, where the reader
+    is metres away: fonts and strokes that look right in an editor are
+    unreadable on a wall. Larger type and thicker lines cost nothing on paper
+    and are the difference between a slide that lands and one that does not.
+    """
     plt.rcParams.update({
         "figure.dpi": 110, "savefig.dpi": 200, "savefig.bbox": "tight",
-        "font.size": 10, "axes.labelsize": 10, "axes.labelcolor": INK_SOFT,
-        "axes.edgecolor": GRID, "axes.linewidth": 0.8,
+        "font.size": 13,
+        "axes.labelsize": 13, "axes.labelcolor": INK_SOFT,
+        "axes.edgecolor": GRID, "axes.linewidth": 1.1,
         "axes.spines.top": False, "axes.spines.right": False,
         "axes.grid": True, "axes.axisbelow": True,
-        "grid.color": GRID, "grid.linewidth": 0.7, "grid.linestyle": "-",
+        "grid.color": GRID, "grid.linewidth": 0.9, "grid.linestyle": "-",
         "xtick.color": INK_SOFT, "ytick.color": INK_SOFT,
-        "xtick.labelsize": 9, "ytick.labelsize": 9,
-        "legend.fontsize": 9, "legend.frameon": True,
+        "xtick.labelsize": 12, "ytick.labelsize": 12,
+        "legend.fontsize": 12, "legend.frameon": True,
         "legend.framealpha": 1.0, "legend.edgecolor": GRID,
-        "lines.linewidth": 2.0, "lines.markersize": 6.5,
+        "lines.linewidth": 3.0, "lines.markersize": 9,
     })
 
 
@@ -141,14 +149,14 @@ def param_box(fig, params) -> None:
     beside the plot is read the way a legend is, and survives being cropped into
     a slide. Two columns keep each key next to its own value.
     """
-    y = 0.90
-    fig.text(0.785, 0.955, "Configuration", fontsize=9.5, color=INK,
+    y = 0.895
+    fig.text(0.785, 0.965, "Configuration", fontsize=12, color=INK,
              weight="medium", va="top")
     for key, value in params:
         if key or value:
-            fig.text(0.785, y, key, fontsize=8.6, color=INK_SOFT, va="top")
-            fig.text(0.90, y, str(value), fontsize=8.6, color=INK, va="top")
-        y -= 0.042
+            fig.text(0.785, y, key, fontsize=11, color=INK_SOFT, va="top")
+            fig.text(0.905, y, str(value), fontsize=11, color=INK, va="top")
+        y -= 0.050
 
 
 def sort_key_factory(order):
@@ -181,10 +189,10 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
         return
 
     if with_time:
-        fig, (ax_t, ax_s) = plt.subplots(2, 1, figsize=(9.0, 7.4), sharex=True,
+        fig, (ax_t, ax_s) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
                                          gridspec_kw={"hspace": 0.15})
     else:
-        fig, ax_s = plt.subplots(figsize=(9.0, 4.8))
+        fig, ax_s = plt.subplots(figsize=(11.0, 5.6))
         ax_t = None
     fig.subplots_adjust(right=0.74)
 
@@ -226,9 +234,9 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
     if ax_t is not None:
         ax_t.set_yscale("log")
         ax_t.set_ylabel(time_label)
-        ax_t.set_title(title, color=INK, loc="left", fontsize=12.5, pad=12)
+        ax_t.set_title(title, color=INK, loc="left", fontsize=15.5, pad=14)
     else:
-        ax_s.set_title(title, color=INK, loc="left", fontsize=12.5, pad=12)
+        ax_s.set_title(title, color=INK, loc="left", fontsize=15.5, pad=14)
 
     param_box(fig, params)
     finish(fig, out)
@@ -358,7 +366,7 @@ def fig_memory(mem, machine, out):
         print("  skip memory: strategies not measured at the same rank counts")
         return
 
-    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    fig, ax = plt.subplots(figsize=(11.0, 5.6))
     fig.subplots_adjust(right=0.74)
     width, xs = 0.34, range(len(ranks))
     for i, (key, label) in enumerate((("bcast", "broadcast"),
@@ -367,7 +375,7 @@ def fig_memory(mem, machine, out):
         offs = [x + (i - 0.5) * (width + 0.02) for x in xs]
         bars = ax.bar(offs, vals, width, label=label,
                       color=STRATEGY_COLOR[label], zorder=3)
-        ax.bar_label(bars, fmt="%.0f", padding=3, fontsize=8.5, color=INK_SOFT)
+        ax.bar_label(bars, fmt="%.0f", padding=4, fontsize=11, color=INK_SOFT)
 
     ax.set_xticks(list(xs))
     ax.set_xticklabels([str(p) for p in ranks])
@@ -376,7 +384,7 @@ def fig_memory(mem, machine, out):
     ax.margins(y=0.18)
     ax.legend(loc="upper right")
     ax.set_title("Input distribution: broadcast vs scatter",
-                 color=INK, loc="left", fontsize=12.5, pad=12)
+                 color=INK, loc="left", fontsize=15.5, pad=14)
 
     param_box(fig, [("machine", machine),
                     ("metric", "peak RSS"),
@@ -419,7 +427,7 @@ def fig_weak(rows, machine, stat, out):
         return
     base = pts[min(pts)]
 
-    fig, (ax_t, ax_e) = plt.subplots(2, 1, figsize=(9.0, 7.4), sharex=True,
+    fig, (ax_t, ax_e) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
                                      gridspec_kw={"hspace": 0.15})
     fig.subplots_adjust(right=0.74)
     xs = sorted(pts)
@@ -444,7 +452,7 @@ def fig_weak(rows, machine, stat, out):
     ax_e.set_ylabel("weak-scaling efficiency")
     ax_e.set_xlabel("MPI ranks")
     ax_t.set_title("STFT: weak scaling (constant work per rank)",
-                   color=INK, loc="left", fontsize=12.5, pad=12)
+                   color=INK, loc="left", fontsize=15.5, pad=14)
 
     param_box(fig, [("machine", machine),
                     ("statistic", stat[:-3]),
@@ -466,7 +474,7 @@ def fig_weak(rows, machine, stat, out):
     finish(fig, out)
 
 
-def fig_granularity(rows, machine, stat, out):
+def fig_granularity(rows, machine, stat, out, distributed=False):
     """The same thread budget spent across frames vs inside each transform.
 
     This is the figure that justifies the engine choice: the STFT could put its
@@ -476,10 +484,19 @@ def fig_granularity(rows, machine, stat, out):
     baseline, so the gap between them is the cost of the granularity decision
     and nothing else.
 
-    The reference is horizontal, not diagonal: the thread count is fixed here
-    and the workload is what varies, so "ideal" means the full thread budget
-    converted into speedup at every problem size.
+    The reference is horizontal, not diagonal: the worker count is fixed here
+    and the workload is what varies, so "ideal" means the whole budget turned
+    into speedup at every problem size.
+
+    `distributed` switches the same comparison to its MPI form, where every
+    rank splits its own share of the frames the same two ways. One function
+    serves both because only the row source and the wording change — the
+    experiment, the baseline and the reading are identical.
     """
+    section = "mpi_granularity" if distributed else "stft_granularity"
+    source  = "benchmark_mpi"   if distributed else "benchmark_openmp"
+    base_section = "mpi" if distributed else "stft"
+    serial_mark  = "serial (1 rank" if distributed else "1 thread"
     LABELS = {"OpenMP frames": "parallel across frames\n(OpenMP loop + IterativeFFT)",
               "sequential frames": "parallel within transform\n(sequential loop + ParallelFFT)"}
     COLORS = {"OpenMP frames": ALGO_COLOR["IterativeFFT"],
@@ -487,29 +504,29 @@ def fig_granularity(rows, machine, stat, out):
 
     curves = defaultdict(dict)      # short key -> {seconds: time}
     serial = {}                     # seconds -> serial time
-    threads = None
+    workers = None                  # the budget the ideal line stands for
     for r in rows:
-        if r["machine"] != machine or r.get("source") != "benchmark_openmp":
+        if r["machine"] != machine or r.get("source") != source:
             continue
         sec = r.get("workload_s")
         if sec is None:
             continue
-        if r["section"] == "stft" and "1 thread" in r["variant"]:
+        if r["section"] == base_section and serial_mark in r["variant"]:
             serial[sec] = min(serial.get(sec, r[stat]), r[stat])
-        elif r["section"] == "stft_granularity":
+        elif r["section"] == section:
             key = next((k for k in LABELS if r["variant"].startswith(k)), None)
             if key is None:
                 continue
             prev = curves[key].get(sec)
             curves[key][sec] = r[stat] if prev is None else min(prev, r[stat])
-            threads = r.get("threads") or threads
+            workers = (r.get("ranks") or 1) * (r.get("threads") or 1)
 
     if len(curves) < 2 or not serial:
-        print(f"  skip granularity: need both strategies and a serial baseline "
+        print(f"  skip {out.name}: need both strategies and a serial baseline "
               f"for {machine}")
         return
 
-    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    fig, ax = plt.subplots(figsize=(11.0, 5.6))
     fig.subplots_adjust(right=0.74)
     all_x = set()
     for key in ("OpenMP frames", "sequential frames"):
@@ -522,32 +539,39 @@ def fig_granularity(rows, machine, stat, out):
                 marker="o", markeredgecolor="white", markeredgewidth=1.2,
                 label=LABELS[key], zorder=3)
 
-    if threads:
-        ax.axhline(threads, color=REFERENCE, linewidth=1.3, linestyle="--",
-                   label=f"ideal ({threads} threads)", zorder=1)
+    if workers:
+        ax.axhline(workers, color=REFERENCE, linewidth=2.4, linestyle="--",
+                   label=f"ideal ({workers} workers)", zorder=1)
     ax.axhline(1.0, color=GRID, linewidth=1.1, zorder=1)
 
     xs = sorted(all_x)
     ax.set_xscale("log")
     ax.set_xticks(xs)
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    # Only the measured workloads get a label: a log axis with two or three
+    # points otherwise decorates the gaps between them with 2x10^1 and friends,
+    # which say nothing and crowd out the numbers that do.
+    ax.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.set_xlabel("audio length [s]")
     ax.set_ylabel("speedup over serial STFT")
-    ax.legend(loc="best")
-    ax.set_title("Where to spend the threads: across frames or inside the FFT",
-                 color=INK, loc="left", fontsize=12.5, pad=12)
+    # The ideal line sits at the top and the curves climb to the right, so the
+    # lower left is the one corner that is reliably empty.
+    ax.legend(loc="lower left")
+    ax.set_title("Thread granularity: across frames or inside the FFT"
+                 + (" — per rank" if distributed else ""),
+                 color=INK, loc="left", fontsize=15.5, pad=14)
 
     param_box(fig, [("machine", machine),
                     ("statistic", stat[:-3]),
-                    ("threads", threads or "?"),
-                    ("MPI ranks", 1),
+                    ("workers", workers or "?"),
+                    ("MPI ranks", "several" if distributed else 1),
                     ("window", "Hann window"),
                     ("baseline", "serial STFT,"),
                     ("", "1 thread, same"),
                     ("", "workload"),
                     ("", ""),
                     ("note", "both rows spend"),
-                    ("", "the same threads;"),
+                    ("", "the same budget;"),
                     ("", "only the level"),
                     ("", "they act on"),
                     ("", "differs"),
@@ -604,6 +628,9 @@ def main() -> int:
         if "granularity" in wanted:
             fig_granularity(timings, m, stat,
                             args.out / f"{m}_7_granularity")
+            fig_granularity(timings, m, stat,
+                            args.out / f"{m}_8_granularity_mpi",
+                            distributed=True)
     return 0
 
 

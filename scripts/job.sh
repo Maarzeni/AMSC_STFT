@@ -2,7 +2,7 @@
 #SBATCH --job-name=AMSC_STFT         ## Job name
 #SBATCH --output=amsc_stft_job.out   ## Standard output file
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
-#SBATCH --time=04:00:00              ## Maximum job duration
+#SBATCH --time=01:00:00              ## Maximum job duration
 #SBATCH --nodes=1                    ## Single node (see MPI note below)
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
@@ -16,9 +16,10 @@
 ## core-hours unspent, which is what makes g100_usr_prod accept the job: an
 ## expired window is what used to answer "invalid account or expired budget".
 ##
-## 8 ranks x 4 threads = 32 cores on one node. Walltime is four hours against
-## roughly one of measurement — a job killed at the limit loses every number it
-## had already taken, and the queue costs nothing extra for the margin.
+## 8 ranks x 4 threads = 32 cores on one node. One hour of walltime against
+## roughly twenty minutes of measurement: enough margin that a slow queue or a
+## busy node cannot truncate the run, since a job killed at the limit loses
+## every number it had already taken.
 ##
 ## Nothing here derives from the old serial-queue setup: TOTAL_CORES and
 ## `mpirun -np` both read the SBATCH values above, and run_suite.sh sizes its
@@ -76,19 +77,27 @@ export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"
 
-# The measurement configuration, matching scripts/job_mox.pbs so the two
-# clusters stay comparable. Without these the suite falls back to its light
-# defaults (7 repetitions, three durations, powers-of-two ranks), which is the
-# right choice for a laptop and the wrong one for 32 dedicated cores.
-BENCH_CONFIG_RANKS="1 2 4 6 8 10 12 14 16 20 24 28 32"
-BENCH_CONFIG_THREADS="1 2 4 6 8 10 12 14 16 20 24 32"
+# ── Measurement profile ──────────────────────────────────────────────────────
+# LIGHT by design. The dense alternative below runs for about three hours, and
+# more than half of that is the benchmark re-measuring its SERIAL baseline once
+# per block — a number that depends on neither the rank count nor the thread
+# count being swept. Cutting the sweep cuts that waste with it.
+#
+# Two workloads rather than four is also the better figure: two curves plus the
+# ideal line read at a glance, four turn a slide into spaghetti.
+#
+# Dense variant, for a final run when the results are settled (~3 h):
+#   BENCH_ARGS="15 3 1024 512"
+#   SCALING_RANKS="1 2 4 6 8 10 12 14 16 20 24 28 32"
+#   THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 32"
+#   SCALING_DURATIONS="5 30 120 300"; MEM_DURATION=120; WEAK_BASE=10
 for v in \
-    "BENCH_ARGS=15 3 1024 512" \
-    "SCALING_RANKS=${BENCH_CONFIG_RANKS}" \
-    "THREAD_LIST=${BENCH_CONFIG_THREADS}" \
-    "SCALING_DURATIONS=5 30 120 300" \
-    "MEM_DURATION=120" \
-    "WEAK_BASE=10"; do
+    "BENCH_ARGS=7 2 1024 512" \
+    "SCALING_RANKS=1 2 4 8 16 24 32" \
+    "THREAD_LIST=1 2 4 8 16 24 32" \
+    "SCALING_DURATIONS=15 120" \
+    "MEM_DURATION=60" \
+    "WEAK_BASE=5"; do
     export "SINGULARITYENV_${v}"
     export "APPTAINERENV_${v}"
 done

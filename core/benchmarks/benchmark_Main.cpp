@@ -23,13 +23,13 @@
  *      ParallelFFT). Both are reported against the same serial baseline as
  *      group 2, so the two strategies are directly comparable.
  *
- *      STFTAnalyzer<ParallelFFT, ...> is not used for the second row: its
- *      frame loop and ParallelFFT's own OpenMP region read the same thread
- *      count, so nesting them cannot keep the frame loop serial while the
- *      transform stays parallel (see the "Parallelism strategy" note in
- *      STFTAnalyzer.hpp). The loop below is written out instead, mirroring
- *      STFTAnalyzer's own per-frame steps with a ParallelFFT engine built
- *      once, with an explicit thread count untouched by that conflict.
+ *      Both rows run through STFTAnalyzer itself: Parallelism::Frames for
+ *      the first, Parallelism::Transform plus a ParallelFFT factory for the
+ *      second. The factory fixes the engine's thread count at capture time,
+ *      which is what keeps the transform parallel while the frame loop is
+ *      sequential — the two used to read the same ambient count, and this
+ *      row was a hand-written replica of the analyzer's frame loop to work
+ *      around it.
  *
  * Usage:
  *   ./benchmark_Main [reps] [warmup] [frame] [hop] [seconds]
@@ -79,41 +79,6 @@ void setThreads([[maybe_unused]] int n) {
 #ifdef _OPENMP
     omp_set_num_threads(n);
 #endif
-}
-
-/**
- * @brief One STFT pass — window, transform, magnitude — over a plain
- *        sequential frame loop, using the given (already constructed) FFT
- *        engine for every frame.
- *
- * Mirrors STFTAnalyzer::computeFrame's steps so a row built from this is
- * directly comparable to STFTAnalyzer's own rows. No OpenMP region of its
- * own: parallelism, if any, comes entirely from `fft` itself.
- */
-template<typename FFT>
-std::vector<double> analyzeSequential(FFT& fft, HannWindow& win,
-                                      const std::vector<double>& signal,
-                                      std::size_t frame, std::size_t hop,
-                                      std::size_t frames) {
-    const std::size_t numBins = frame / 2 + 1;
-    const double norm = static_cast<double>(frame) * win.coherentGain();
-
-    std::vector<double> magnitudes(frames * numBins);
-    std::vector<double> buf(frame);
-    std::vector<std::complex<double>> spec(frame);
-
-    for (std::size_t fi = 0; fi < frames; ++fi) {
-        const std::size_t offset = fi * hop;
-        for (std::size_t i = 0; i < frame; ++i)
-            buf[i] = (offset + i < signal.size()) ? signal[offset + i] : 0.0;
-        win.apply(buf);
-        for (std::size_t i = 0; i < frame; ++i)
-            spec[i] = {buf[i], 0.0};
-        fft.forward(spec);
-        for (std::size_t k = 0; k < numBins; ++k)
-            magnitudes[fi * numBins + k] = std::abs(spec[k]) / norm;
-    }
-    return magnitudes;
 }
 
 } // namespace
@@ -181,12 +146,15 @@ int main(int argc, char** argv) {
     // machine's real core count is no longer readable.
     const int nThreads = maxThreads();
 
-    // Explicit thread count, not the 0 = auto-detect default: ParallelFFT
-    // would otherwise read the ambient thread count at construction, which
-    // setThreads(1) below sets to 1 — collapsing it to serial along with the
-    // frame loop instead of staying parallel independently of it.
-    ParallelFFT granularityFFT(static_cast<std::size_t>(nThreads));
-    HannWindow  granularityWin(frame);
+    // The same analyzer, with the thread budget spent inside each transform
+    // instead of across the frames. The factory captures nThreads by value:
+    // ParallelFFT would otherwise read the ambient count when built, and the
+    // setThreads(1) below would collapse it to serial along with the frame
+    // loop rather than leaving it parallel independently of it.
+    STFTAnalyzer<ParallelFFT, HannWindow> transformAnalyzer(
+        frame, hop, SR,
+        [n = static_cast<std::size_t>(nThreads)] { return ParallelFFT(n); },
+        Parallelism::Transform);
 
     for (const double sec : durations) {
         const std::size_t signalLen =
@@ -212,15 +180,11 @@ int main(int argc, char** argv) {
                            1, nThreads, nThreads, std::nullopt,
                            static_cast<long long>(frames), sec, sOmp, sSerial.mean);
 
-        // Same thread budget, spent inside each transform instead of across
-        // frames. setThreads() does not affect this measurement: the frame
-        // loop has no OpenMP region and granularityFFT's thread count was
-        // fixed at construction.
-        const bench::Stats sGranular = bench::measure(warmup, reps, [&] {
-            auto magnitudes = analyzeSequential(granularityFFT, granularityWin,
-                                                signal, frame, hop, frames);
-            bench::doNotOptimize(magnitudes);
-        });
+        // setThreads() does not reach this measurement: under
+        // Parallelism::Transform the frame loop has no OpenMP region, and the
+        // engine's thread count was fixed when the factory captured it.
+        const bench::Stats sGranular =
+            bench::benchSTFT(transformAnalyzer, signal, warmup, reps);
         bench::writeTiming(std::cout, "stft_granularity",
                            "sequential frames + ParallelFFT (" +
                                std::to_string(nThreads) + " thr)",
