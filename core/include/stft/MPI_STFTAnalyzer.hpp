@@ -34,10 +34,15 @@
  * input signal itself.  The input bottleneck is removed, the output one is not.
  *
  * ─── Hybrid MPI + OpenMP ────────────────────────────────────────────────────
- * STFTAnalyzer uses `#pragma omp parallel for` over its frame block, so each
- * MPI rank automatically uses all available cores.  Recommended usage:
+ * By default STFTAnalyzer uses `#pragma omp parallel for` over its frame block,
+ * so each MPI rank automatically uses all available cores.  Recommended usage:
  *   mpirun -np <nodes> --map-by node --bind-to none ./mpi_main
  *   OMP_NUM_THREADS=<cores_per_node> mpirun ...
+ *
+ * Passing Parallelism::Transform (plus a parallel engine, see the FFT factory
+ * constructors below) moves the intra-rank threads inside each transform
+ * instead: MPI still distributes the frames, but a rank's cores cooperate on
+ * one frame at a time rather than on several frames at once.
  *
  * @tparam FFT     Any type satisfying IsFFT<FFT>           (e.g. IterativeFFT)
  * @tparam Window  Any type satisfying WindowFunction<Window> (e.g. HannWindow)
@@ -53,10 +58,12 @@
 
 #include <mpi.h>
 #include <vector>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace stft {
 
@@ -83,6 +90,9 @@ template<typename FFT, typename Window>
     requires IsFFT<FFT> && WindowFunction<Window>
 class MPI_STFTAnalyzer {
 public:
+    /// Same factory type the local engine uses; see STFTAnalyzer::FFTFactory.
+    using FFTFactory = typename STFTAnalyzer<FFT, Window>::FFTFactory;
+
     // ── Construction ──────────────────────────────────────────────────────────
 
     /**
@@ -91,18 +101,59 @@ public:
      * @param hopSize    Hop between successive frames (>= 1).
      * @param sampleRate Audio sample rate in Hz (informational).
      * @param dist       Input distribution strategy (see Distribution).
+     * @param mode       Intra-rank parallelism (see Parallelism).  Trails dist
+     *                   so that existing positional calls keep their meaning.
      */
     MPI_STFTAnalyzer(const MPIContext& ctx,
                      std::size_t frameSize,
                      std::size_t hopSize,
                      std::uint32_t sampleRate = 0,
+                     Distribution dist = Distribution::Scatter,
+                     Parallelism mode = Parallelism::Frames)
+        : ctx_(ctx),
+          engine_(frameSize, hopSize, sampleRate, mode),
+          dist_(dist)
+    {}
+
+    /**
+     * @brief As above, with the local engines built by a caller-supplied factory.
+     *
+     * Distribution and Parallelism are independent: the first says how the
+     * samples reach the ranks, the second how each rank spends its cores once
+     * they arrive.  Parallelism::Transform gives a third hybrid shape — MPI
+     * across the frames, OpenMP inside each transform — next to the usual
+     * Parallelism::Frames, where both levels work across frames.
+     */
+    MPI_STFTAnalyzer(const MPIContext& ctx,
+                     std::size_t frameSize,
+                     std::size_t hopSize,
+                     std::uint32_t sampleRate,
+                     FFTFactory factory,
+                     Parallelism mode = Parallelism::Frames,
                      Distribution dist = Distribution::Scatter)
         : ctx_(ctx),
-          engine_(frameSize, hopSize, sampleRate),
+          engine_(frameSize, hopSize, sampleRate, std::move(factory), mode),
+          dist_(dist)
+    {}
+
+    /// As above, from an already-constructed engine used as a prototype.
+    MPI_STFTAnalyzer(const MPIContext& ctx,
+                     std::size_t frameSize,
+                     std::size_t hopSize,
+                     std::uint32_t sampleRate,
+                     FFT prototype,
+                     Parallelism mode = Parallelism::Transform,
+                     Distribution dist = Distribution::Scatter)
+        requires std::copy_constructible<FFT>
+        : ctx_(ctx),
+          engine_(frameSize, hopSize, sampleRate, std::move(prototype), mode),
           dist_(dist)
     {}
 
     [[nodiscard]] Distribution distribution() const noexcept { return dist_; }
+    [[nodiscard]] Parallelism  parallelism()  const noexcept {
+        return engine_.parallelism();
+    }
 
     /**
      * @brief Size of rank `r`'s sample block, i.e. what Scatter sends it.

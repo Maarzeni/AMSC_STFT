@@ -12,13 +12,44 @@
  * inside the implementation.
  *
  * ─── Parallelism strategy ────────────────────────────────────────────────────
- * The outer frame loop is parallelised with OpenMP. Because both Window and
- * FFT modify their data in-place, each OpenMP thread constructs its own private
- * Window and FFT instances (declared inside the loop body). This approach
- * requires no synchronisation and scales linearly with the number of cores.
+ * Where the parallelism lives is a runtime choice (see Parallelism below), and
+ * it is orthogonal to how the FFT engine is built (see the FFT factory below):
  *
- * Use IterativeFFT as the FFT parameter when running with OpenMP; ParallelFFT
- * inside an OpenMP region would create nested parallelism and is likely slower.
+ *   Parallelism::Frames     The outer frame loop runs inside an OpenMP region.
+ *                           Because both Window and FFT mutate their data in
+ *                           place, each thread builds its own private Window,
+ *                           FFT and work buffers, so no synchronisation is
+ *                           needed.  Pair it with a serial engine such as
+ *                           IterativeFFT.  This is the default and matches the
+ *                           behaviour of every earlier release.
+ *
+ *   Parallelism::Transform  The frame loop is plain sequential and one engine
+ *                           serves every frame; the parallelism, if any, comes
+ *                           from inside the FFT itself.  Pair it with an engine
+ *                           that parallelises a single transform, such as
+ *                           ParallelFFT.
+ *
+ * The two modes spend the same thread budget in different places, which is what
+ * makes them directly comparable: across frames versus within each transform.
+ *
+ * ─── Building the FFT engine ────────────────────────────────────────────────
+ * The engine is obtained from an FFTFactory (std::function<FFT()>), which
+ * defaults to default-construction — so the three-argument constructor behaves
+ * exactly as before.  A factory, or an already-constructed instance to copy
+ * from, can be injected instead; this is the only way to configure an engine
+ * that takes constructor arguments, such as ParallelFFT's thread count.
+ *
+ * Under Frames the factory is invoked once per thread, inside the OpenMP
+ * region, so the engines are never shared.  A factory returning ParallelFFT(0)
+ * would therefore resolve "auto-detect" against the nested level rather than
+ * the machine: factories must fix the thread count explicitly, capturing it
+ * before any omp_set_num_threads() call.  With that caveat honoured, Frames
+ * plus a parallel engine is deliberate nested parallelism, with the inner width
+ * pinned by the factory instead of being read from the ambient environment.
+ *
+ * The type-erasure cost of std::function is paid once per thread (Frames) or
+ * once per call (Transform), never per frame, and no polymorphic base pointer
+ * is introduced: the CRTP static dispatch of BaseFFT is untouched.
  *
  * ─── MPI integration point ───────────────────────────────────────────────────
  * MPI_STFTAnalyzer holds an STFTAnalyzer<FFT,Window> instance and calls
@@ -37,10 +68,13 @@
 #include <vector>
 #include <complex>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -48,32 +82,107 @@
 
 namespace stft {
 
+/**
+ * @brief Where the thread budget is spent during an analysis pass.
+ *
+ * Frames:    OpenMP across the frame loop, one private engine per thread.  The
+ *            FFT itself is expected to be serial (IterativeFFT).
+ * Transform: sequential frame loop over a single engine, so the FFT's own
+ *            parallel region is the only one (ParallelFFT).
+ *
+ * Declared at namespace scope so call sites can name it without repeating the
+ * analyzer's template arguments — the same choice made for Distribution in
+ * MPI_STFTAnalyzer.hpp.
+ */
+enum class Parallelism {
+    Frames,     ///< #pragma omp parallel over the frames (default)
+    Transform   ///< sequential frames; parallelism comes from within the FFT
+};
+
 template<typename FFT, typename Window>
     requires IsFFT<FFT> && WindowFunction<Window>
 class STFTAnalyzer {
 public:
+    /// Builds one FFT engine.  Invoked once per thread under Parallelism::Frames,
+    /// once per analysis call under Parallelism::Transform.
+    using FFTFactory = std::function<FFT()>;
+
     // ── Construction ──────────────────────────────────────────────────────────
 
     /**
+     * @brief Default-constructed engines.
+     *
      * @param frameSize  Number of samples per STFT frame.  Must be a power of
      *                   two and >= 2 (enforced by the FFT layer).
      * @param hopSize    Step between successive frame starts.  Must be >= 1.
      * @param sampleRate Audio sample rate in Hz (stored in SpectrogramData for
      *                   convenience; does not affect computation).
+     * @param mode       Where the thread budget is spent (see Parallelism).
      */
     explicit STFTAnalyzer(std::size_t frameSize,
                           std::size_t hopSize,
-                          std::uint32_t sampleRate = 0)
-        : frameSize_(frameSize), hopSize_(hopSize), sampleRate_(sampleRate)
+                          std::uint32_t sampleRate = 0,
+                          Parallelism mode = Parallelism::Frames)
+        // constructible_from, not default_initializable: BaseFFT's default
+        // constructor is protected, so FFT{} is ill-formed for the CRTP
+        // derivatives (they are aggregates) while FFT() is fine.
+        requires std::constructible_from<FFT>
+        : frameSize_(frameSize), hopSize_(hopSize), sampleRate_(sampleRate),
+          fftFactory_([] { return FFT(); }), mode_(mode)
     {
-        if (frameSize_ < 2 || (frameSize_ & (frameSize_ - 1)) != 0)
-            throw std::invalid_argument(
-                "STFTAnalyzer: frameSize must be a power of two >= 2, got " +
-                std::to_string(frameSize_) + ".");
-        if (hopSize_ < 1)
-            throw std::invalid_argument(
-                "STFTAnalyzer: hopSize must be >= 1.");
+        validate();
     }
+
+    /**
+     * @brief Engines built on demand by a caller-supplied factory.
+     *
+     * The only way to configure an engine whose constructor takes arguments:
+     *
+     *   STFTAnalyzer<ParallelFFT, HannWindow> a(
+     *       1024, 512, 44100,
+     *       [n = threads] { return ParallelFFT(n); },
+     *       Parallelism::Transform);
+     *
+     * @param factory  Must not be empty.  See the "Building the FFT engine"
+     *                 note at the top of this file for the ParallelFFT(0)
+     *                 caveat under Parallelism::Frames.
+     */
+    STFTAnalyzer(std::size_t frameSize,
+                 std::size_t hopSize,
+                 std::uint32_t sampleRate,
+                 FFTFactory factory,
+                 Parallelism mode = Parallelism::Frames)
+        : frameSize_(frameSize), hopSize_(hopSize), sampleRate_(sampleRate),
+          fftFactory_(std::move(factory)), mode_(mode)
+    {
+        if (!fftFactory_)
+            throw std::invalid_argument(
+                "STFTAnalyzer: the FFT factory must not be empty.");
+        validate();
+    }
+
+    /**
+     * @brief An already-constructed engine, used as a prototype.
+     *
+     * The prototype is never used directly: every analysis pass copies it, so
+     * under Parallelism::Frames each thread still gets its own engine and the
+     * const-qualified analyze() never mutates the stored instance.  Defaults to
+     * Parallelism::Transform, the reason one usually configures an engine by
+     * hand in the first place.
+     *
+     * Unambiguous against the factory overload: a lambda converts to FFTFactory
+     * but not to FFT, and an FFT converts to FFT but not to FFTFactory.
+     */
+    STFTAnalyzer(std::size_t frameSize,
+                 std::size_t hopSize,
+                 std::uint32_t sampleRate,
+                 FFT prototype,
+                 Parallelism mode = Parallelism::Transform)
+        requires std::copy_constructible<FFT>
+        : STFTAnalyzer(frameSize, hopSize, sampleRate,
+                       FFTFactory([p = std::move(prototype)] { return p; }),
+                       mode)
+    {}
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -95,6 +204,7 @@ public:
     [[nodiscard]] std::size_t frameSize()  const noexcept { return frameSize_;  }
     [[nodiscard]] std::size_t hopSize()    const noexcept { return hopSize_;    }
     [[nodiscard]] std::uint32_t sampleRate() const noexcept { return sampleRate_; }
+    [[nodiscard]] Parallelism parallelism() const noexcept { return mode_;      }
 
     // ── Analysis ──────────────────────────────────────────────────────────────
 
@@ -139,30 +249,38 @@ public:
 
         if (count == 0) return result;
 
-        // Each OpenMP thread gets private Window + FFT + work buffers to avoid
-        // data races on in-place mutating objects.
 #ifdef _OPENMP
-        #pragma omp parallel
-        {
-            Window win(frameSize_);
-            FFT    fft;
-            std::vector<double>               buf(frameSize_);
-            std::vector<std::complex<double>> spec(frameSize_);
-
-            #pragma omp for schedule(static)
-            for (std::ptrdiff_t fi = 0;
-                 fi < static_cast<std::ptrdiff_t>(count);
-                 ++fi)
+        // Each OpenMP thread gets private Window + FFT + work buffers to avoid
+        // data races on in-place mutating objects.  The factory runs once per
+        // thread, inside the region, so no engine is ever shared.
+        if (mode_ == Parallelism::Frames) {
+            #pragma omp parallel
             {
-                computeFrame(signal, startFrame + static_cast<std::size_t>(fi),
-                             win, fft, buf, spec,
-                             result.magnitudes.data() +
-                             static_cast<std::size_t>(fi) * numBins);
+                Window win(frameSize_);
+                FFT    fft = fftFactory_();
+                std::vector<double>               buf(frameSize_);
+                std::vector<std::complex<double>> spec(frameSize_);
+
+                #pragma omp for schedule(static)
+                for (std::ptrdiff_t fi = 0;
+                     fi < static_cast<std::ptrdiff_t>(count);
+                     ++fi)
+                {
+                    computeFrame(signal, startFrame + static_cast<std::size_t>(fi),
+                                 win, fft, buf, spec,
+                                 result.magnitudes.data() +
+                                 static_cast<std::size_t>(fi) * numBins);
+                }
             }
+            return result;
         }
-#else
+#endif
+        // Parallelism::Transform, and every build without OpenMP: no region of
+        // our own, one engine for the whole pass.  Any parallelism here comes
+        // from inside fft itself.  The engine is a local, not a member, so the
+        // const-qualified analysis can call its non-const forward().
         Window win(frameSize_);
-        FFT    fft;
+        FFT    fft = fftFactory_();
         std::vector<double>               buf(frameSize_);
         std::vector<std::complex<double>> spec(frameSize_);
 
@@ -171,7 +289,6 @@ public:
                          win, fft, buf, spec,
                          result.magnitudes.data() + fi * numBins);
         }
-#endif
         return result;
     }
 
@@ -179,6 +296,19 @@ private:
     std::size_t    frameSize_;
     std::size_t    hopSize_;
     std::uint32_t  sampleRate_;
+    FFTFactory     fftFactory_;   ///< never empty: checked at construction
+    Parallelism    mode_;
+
+    /// Geometry checks shared by every constructor.
+    void validate() const {
+        if (frameSize_ < 2 || (frameSize_ & (frameSize_ - 1)) != 0)
+            throw std::invalid_argument(
+                "STFTAnalyzer: frameSize must be a power of two >= 2, got " +
+                std::to_string(frameSize_) + ".");
+        if (hopSize_ < 1)
+            throw std::invalid_argument(
+                "STFTAnalyzer: hopSize must be >= 1.");
+    }
 
     /**
      * @brief Process a single frame: copy + zero-pad → window → FFT → magnitude.
