@@ -21,7 +21,10 @@
 #
 #   BUILD_DIR    where the compiled binaries live. Auto-detected: the in-image
 #                path when running inside the container, else core/build.
-#   RESULTS_DIR  where result files are written.    default ./results/raw
+#   RESULTS_DIR      where benchmark CSVs and the environment log are written.
+#                    default ./results/results_benchmark
+#   TEST_RESULTS_DIR where the ctest log and its working copy are written.
+#                    default ./results/results_test
 #   PREFIX       file name prefix, i.e. which machine.  auto: cluster/github/local
 #   RANKS        MPI ranks.                default SLURM_NTASKS, else 2
 #   THREADS      OpenMP threads per rank.   default SLURM_CPUS_PER_TASK, else 2
@@ -171,7 +174,8 @@ elif [ -n "${PBS_JOBID:-}" ]; then
     [ -n "${NCPUS:-}" ] && [ "${NCPUS}" -gt "${BATCH_CORES:-0}" ] && BATCH_CORES=${NCPUS}
 fi
 
-RESULTS_DIR=${RESULTS_DIR:-${PWD}/results/raw}
+RESULTS_DIR=${RESULTS_DIR:-${PWD}/results/results_benchmark}
+TEST_RESULTS_DIR=${TEST_RESULTS_DIR:-${PWD}/results/results_test}
 RANKS=${RANKS:-${SLURM_NTASKS:-2}}
 THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-2}}
 BENCH_ARGS=${BENCH_ARGS:-"7 2 1024 512"}
@@ -182,7 +186,7 @@ MEM_DURATION=${MEM_DURATION:-30}
 SCALING_DURATIONS=${SCALING_DURATIONS:-${SCALING_DURATION:-"5 15 60"}}
 TOTAL_CORES=$(( RANKS * THREADS ))
 
-mkdir -p "${RESULTS_DIR}"
+mkdir -p "${RESULTS_DIR}" "${TEST_RESULTS_DIR}"
 
 # ── MPI: make it survive both a container and an oversubscribed laptop ──────
 MPIRUN_EXTRA=""
@@ -284,14 +288,14 @@ SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
 echo "==================== [1/7] Unit tests (ctest) ============================"
-CTEST_MIRROR="${RESULTS_DIR}/../analysis/ctest-run"
+CTEST_MIRROR="${TEST_RESULTS_DIR}"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
 ( cd "${BUILD_DIR}" && find . -name CTestTestfile.cmake -exec cp --parents -t "${CTEST_MIRROR}" {} + )
 
 export OMP_NUM_THREADS=${TOTAL_CORES}
 ( cd "${CTEST_MIRROR}" && ctest --output-on-failure ) \
-    2>&1 | tee "${RESULTS_DIR}/${PREFIX}_ctest.txt"
+    2>&1 | tee "${TEST_RESULTS_DIR}/${PREFIX}_ctest.txt"
 note_status "${PIPESTATUS[0]}" "unit-tests"
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
@@ -474,8 +478,12 @@ if [ -n "${FAILED}" ]; then
     echo "FAILED sections:${FAILED}"
     echo "Results in ${RESULTS_DIR} (incomplete):"
     ls -1 "${RESULTS_DIR}" | sed 's/^/  /'
+    echo "Test results in ${TEST_RESULTS_DIR}:"
+    ls -1 "${TEST_RESULTS_DIR}" | sed 's/^/  /'
     exit 1
 fi
 
 echo "All sections completed. Results in ${RESULTS_DIR}:"
 ls -1 "${RESULTS_DIR}" | sed 's/^/  /'
+echo "Test results in ${TEST_RESULTS_DIR}:"
+ls -1 "${TEST_RESULTS_DIR}" | sed 's/^/  /'

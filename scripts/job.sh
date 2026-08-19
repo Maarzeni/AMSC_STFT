@@ -77,9 +77,11 @@ BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 RESULTS="${SLURM_SUBMIT_DIR}/results"
 mkdir -p "${RESULTS}"
 
-export SINGULARITYENV_RESULTS_DIR="${RESULTS}"
+export SINGULARITYENV_RESULTS_DIR="${RESULTS}/results_benchmark"
+export SINGULARITYENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export SINGULARITYENV_PREFIX="cluster"
-export APPTAINERENV_RESULTS_DIR="${RESULTS}"
+export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
+export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"
 
 singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \

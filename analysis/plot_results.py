@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Parallel-performance figures for the AMSC_STFT report.
 
-Reads only results/analysis/csv/timings.csv and memory.csv — never the raw
-benchmark output — so a change to the C++ output format only ever requires a
-fix in parse_results.py, never here.
+Reads only results/results_analysis/csv/timings.csv and memory.csv — never
+the raw benchmark output — so a change to the C++ output format only ever
+requires a fix in parse_results.py, never here.
 
-    python3 analysis/parse_results.py results/raw/*/ -o results/analysis/csv/
-    python3 analysis/plot_results.py --csv results/analysis/csv/ --out results/analysis/figures/
+    python3 analysis/parse_results.py
+    python3 analysis/plot_results.py
+
+Both read from and write to their default locations under results/; pass
+`--csv`/`--out` (see below) only to point at something else.
 
   1  fft_algorithms  FFT algorithms as OpenMP threads grow — time AND speedup
   2  stft_openmp     STFT on OpenMP alone (1 MPI rank), speedup
@@ -463,22 +466,115 @@ def fig_weak(rows, machine, stat, out):
     finish(fig, out)
 
 
+def fig_granularity(rows, machine, stat, out):
+    """The same thread budget spent across frames vs inside each transform.
+
+    This is the figure that justifies the engine choice: the STFT could put its
+    threads either on the frame loop (many independent transforms, one thread
+    each) or inside every transform (one frame at a time, all threads on its
+    butterflies). Both rows use the same thread count and the same serial
+    baseline, so the gap between them is the cost of the granularity decision
+    and nothing else.
+
+    The reference is horizontal, not diagonal: the thread count is fixed here
+    and the workload is what varies, so "ideal" means the full thread budget
+    converted into speedup at every problem size.
+    """
+    LABELS = {"OpenMP frames": "parallel across frames\n(OpenMP loop + IterativeFFT)",
+              "sequential frames": "parallel within transform\n(sequential loop + ParallelFFT)"}
+    COLORS = {"OpenMP frames": ALGO_COLOR["IterativeFFT"],
+              "sequential frames": ALGO_COLOR["ParallelFFT"]}
+
+    curves = defaultdict(dict)      # short key -> {seconds: time}
+    serial = {}                     # seconds -> serial time
+    threads = None
+    for r in rows:
+        if r["machine"] != machine or r.get("source") != "benchmark_openmp":
+            continue
+        sec = r.get("workload_s")
+        if sec is None:
+            continue
+        if r["section"] == "stft" and "1 thread" in r["variant"]:
+            serial[sec] = min(serial.get(sec, r[stat]), r[stat])
+        elif r["section"] == "stft_granularity":
+            key = next((k for k in LABELS if r["variant"].startswith(k)), None)
+            if key is None:
+                continue
+            prev = curves[key].get(sec)
+            curves[key][sec] = r[stat] if prev is None else min(prev, r[stat])
+            threads = r.get("threads") or threads
+
+    if len(curves) < 2 or not serial:
+        print(f"  skip granularity: need both strategies and a serial baseline "
+              f"for {machine}")
+        return
+
+    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    fig.subplots_adjust(right=0.74)
+    all_x = set()
+    for key in ("OpenMP frames", "sequential frames"):
+        pts = {x: t for x, t in curves.get(key, {}).items() if x in serial}
+        if len(pts) < 2:
+            continue
+        xs = sorted(pts)
+        all_x.update(xs)
+        ax.plot(xs, [serial[x] / pts[x] for x in xs], color=COLORS[key],
+                marker="o", markeredgecolor="white", markeredgewidth=1.2,
+                label=LABELS[key], zorder=3)
+
+    if threads:
+        ax.axhline(threads, color=REFERENCE, linewidth=1.3, linestyle="--",
+                   label=f"ideal ({threads} threads)", zorder=1)
+    ax.axhline(1.0, color=GRID, linewidth=1.1, zorder=1)
+
+    xs = sorted(all_x)
+    ax.set_xscale("log")
+    ax.set_xticks(xs)
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("audio length [s]")
+    ax.set_ylabel("speedup over serial STFT")
+    ax.legend(loc="best")
+    ax.set_title("Where to spend the threads: across frames or inside the FFT",
+                 color=INK, loc="left", fontsize=12.5, pad=12)
+
+    param_box(fig, [("machine", machine),
+                    ("statistic", stat[:-3]),
+                    ("threads", threads or "?"),
+                    ("MPI ranks", 1),
+                    ("window", "Hann window"),
+                    ("baseline", "serial STFT,"),
+                    ("", "1 thread, same"),
+                    ("", "workload"),
+                    ("", ""),
+                    ("note", "both rows spend"),
+                    ("", "the same threads;"),
+                    ("", "only the level"),
+                    ("", "they act on"),
+                    ("", "differs"),
+                    ("", ""),
+                    ("", "frames are whole"),
+                    ("", "independent tasks;"),
+                    ("", "the stages of one"),
+                    ("", "transform are not")])
+    finish(fig, out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--csv", type=Path, default=Path("results/analysis/csv"))
-    ap.add_argument("--out", type=Path, default=Path("results/analysis/figures"))
+    ap.add_argument("--csv", type=Path, default=Path("results/results_analysis/csv"))
+    ap.add_argument("--out", type=Path, default=Path("results/results_analysis/figures"))
     ap.add_argument("--machine", action="append", default=None)
     ap.add_argument("--stat", default="min", choices=["min", "median", "mean"])
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
-                         "stft_hybrid, memory, weak")
+                         "stft_hybrid, memory, weak, granularity")
     args = ap.parse_args()
 
     stat = f"{args.stat}_ms"
     wanted = ({w.strip() for w in args.only.split(",")} if args.only else
               {"fft_algorithms", "stft_openmp", "stft_mpi", "stft_hybrid",
-               "memory", "weak"})
+               "memory", "weak", "granularity"})
 
     timings = load(args.csv / "timings.csv")
     memory = load(args.csv / "memory.csv")
@@ -505,6 +601,9 @@ def main() -> int:
             fig_memory(memory, m, args.out / f"{m}_5_memory")
         if "weak" in wanted:
             fig_weak(timings, m, stat, args.out / f"{m}_6_weak_scaling")
+        if "granularity" in wanted:
+            fig_granularity(timings, m, stat,
+                            args.out / f"{m}_7_granularity")
     return 0
 
 

@@ -83,7 +83,8 @@ fi
 # together with one taken on a shared login node.
 export PREFIX=mox-cpu
 export BUILD_DIR="${WORKDIR}/build"
-export RESULTS_DIR="${WORKDIR}/results"
+export RESULTS_DIR="${WORKDIR}/results/results_benchmark"
+export TEST_RESULTS_DIR="${WORKDIR}/results/results_test"
 export BENCH_ARGS="15 3 1024 512"
 # Every rank count up to the ceiling, not just powers of two: the interesting
 # part of a scaling curve is where it bends away from ideal, and powers of two
@@ -108,10 +109,12 @@ SUITE_STATUS=$?
 # ── Save the results ─────────────────────────────────────────────────────────
 # /scratch_local is node-local and swept after 30 days, so anything worth having
 # must be copied back before the job ends. The job id keeps runs from
-# overwriting each other.
-DEST="${PROJECT}/results/raw/mox-${PBS_JOBID%%.*}"
+# overwriting each other. Both RESULTS_DIR (benchmark CSVs) and
+# TEST_RESULTS_DIR (ctest output) live under the same results/ tree, so one
+# copy brings both back.
+DEST="${PROJECT}/results/mox-${PBS_JOBID%%.*}"
 mkdir -p "${DEST}"
-cp -r "${RESULTS_DIR}/." "${DEST}/" && echo "results copied to ${DEST}"
+cp -r "${WORKDIR}/results/." "${DEST}/" && echo "results copied to ${DEST}"
 ls -1 "${DEST}" | sed 's/^/  /'
 
 # Node-local scratch is not shared, so tidy up after ourselves.

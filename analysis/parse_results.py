@@ -12,15 +12,20 @@ silently mix in another). Both are carried by the file name, which
 run_suite.sh already writes as `<machine>_<source>.csv`.
 
 Usage:
-    python3 analysis/parse_results.py results/raw/*/ -o results/analysis/csv/
+    python3 analysis/parse_results.py
 
-Writes results/analysis/csv/timings.csv and memory.csv, both in long ("tidy")
-form —
-rows from every file and every machine given, concatenated, so several runs
-can be plotted on the same axes. Which output a row belongs to is decided by
-its own `kind` column (see core/benchmarks/benchmark_Suite.hpp): "timing"
-rows go to timings.csv, "memory_analytic" and "memory_rss" rows to
-memory.csv.
+Reads every CSV in results/results_benchmark/ by default and writes
+results/results_analysis/csv/timings.csv and memory.csv. Pass explicit
+directories, and `-o` for a different output, when several machines' output
+needs collecting from separate places first:
+
+    python3 analysis/parse_results.py results/results_benchmark/ path/to/other/machine/
+
+Rows from every file and every machine given are concatenated, both in long
+("tidy") form, so several runs can be plotted on the same axes. Which output
+a row belongs to is decided by its own `kind` column (see
+core/benchmarks/benchmark_Suite.hpp): "timing" rows go to timings.csv,
+"memory_analytic" and "memory_rss" rows to memory.csv.
 
 Standard library only, on purpose: it has to run wherever the results do.
 """
@@ -55,10 +60,13 @@ def read_rows(path: Path, machine: str, source: str) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dirs", nargs="+", type=Path,
-                    help="directories holding <machine>_*.csv result files")
-    ap.add_argument("-o", "--out", type=Path, default=Path("results/analysis/csv"),
-                    help="output directory (default: results/analysis/csv/)")
+    ap.add_argument("dirs", nargs="*", type=Path,
+                    default=[Path("results/results_benchmark")],
+                    help="directories holding <machine>_*.csv result files "
+                         "(default: results/results_benchmark/)")
+    ap.add_argument("-o", "--out", type=Path,
+                    default=Path("results/results_analysis/csv"),
+                    help="output directory (default: results/results_analysis/csv/)")
     args = ap.parse_args()
 
     timings: list[dict] = []

@@ -137,13 +137,16 @@ core/
         └── scale.wav                 .gitignore is negated for them); the
                                       first is also test_WavReader's fixture
 
-results/                           ← Everything a run writes. Not in git.
-├── raw/                           ← run_suite.sh output: CSV per topic, plus
-│                                     the environment and ctest logs
-├── analysis/                      ← everything downstream of raw/
+results/                           ← Everything a run writes. Not in git. Each
+│                                     subdirectory is named after what writes
+│                                     to it.
+├── results_benchmark/             ← run_suite.sh: one CSV per benchmark
+│                                     topic, plus the environment log
+├── results_test/                  ← run_suite.sh: the ctest log and ctest's
+│                                     own working copy (see run_suite.sh)
+├── results_analysis/              ← parse_results.py + plot_results.py
 │   ├── csv/                       ← parse_results.py output
-│   ├── figures/                   ← plot_results.py output (PNG)
-│   └── ctest-run/                 ← ctest's own working copy (see run_suite.sh)
+│   └── figures/                   ← plot_results.py output (PNG)
 └── results_examples/              ← the spectrograms the two examples in
                                       core/examples/ write
 ```
@@ -411,7 +414,8 @@ Everything is configured through environment variables, all optional:
 | Variable | Default | Meaning |
 |---|---|---|
 | `BUILD_DIR` | in-image path, else `core/build` | where the binaries are |
-| `RESULTS_DIR` | `./results/raw` | where result files are written |
+| `RESULTS_DIR` | `./results/results_benchmark` | where benchmark CSVs and the environment log are written |
+| `TEST_RESULTS_DIR` | `./results/results_test` | where the ctest log and its working copy are written |
 | `PREFIX` | `cluster` / `github` / `local` | file-name prefix, i.e. which machine |
 | `RANKS`, `THREADS` | 2, 2 | MPI ranks and OpenMP threads per rank |
 | `BENCH_ARGS` | `"7 2 1024 512"` | reps, warm-up, frame, hop |
@@ -422,14 +426,14 @@ Everything is configured through environment variables, all optional:
 | `WEAK_BASE` | 5 | seconds of audio per rank in the weak-scaling sweep |
 | `SCALING`, `THREAD_SCALING`, `WEAK_SCALING` | on | set any to `0` to skip that sweep |
 
-The results land in `results/raw/` as `<prefix>_env.txt`, `<prefix>_ctest.txt`, `<prefix>_benchmark_openmp.csv`, `<prefix>_benchmark_mpi.csv`, `<prefix>_memory_bcast_vs_scatter.csv`, `<prefix>_scaling.csv`, `<prefix>_scaling_threads.csv` and `<prefix>_weak_scaling.csv` — the `.txt` files are plain logs, the `.csv` ones are the benchmarks' own output, several invocations appended into one file per topic. Two scripts turn them into tidy CSV and figures:
+The results land in `results/results_benchmark/` as `<prefix>_env.txt`, `<prefix>_benchmark_openmp.csv`, `<prefix>_benchmark_mpi.csv`, `<prefix>_memory_bcast_vs_scatter.csv`, `<prefix>_scaling.csv`, `<prefix>_scaling_threads.csv` and `<prefix>_weak_scaling.csv` — the `.txt` file is a plain log, the `.csv` ones are the benchmarks' own output, several invocations appended into one file per topic. `<prefix>_ctest.txt` and ctest's own working copy land separately, in `results/results_test/`. Two scripts turn the benchmark CSVs into tidy CSV and figures, both under `results/results_analysis/` by default — no path needed for the common case:
 
 ```bash
-python3 analysis/parse_results.py results/raw/ -o results/analysis/csv/
-python3 analysis/plot_results.py --csv results/analysis/csv/ --out results/analysis/figures/
+python3 analysis/parse_results.py
+python3 analysis/plot_results.py
 ```
 
-`parse_results.py` takes one or more result directories — `results/raw/*/` when several machines have been collected side by side — tags every row with its machine and which sweep produced it, and writes `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one PNG per figure.
+`parse_results.py` reads `results/results_benchmark/` by default; pass one or more directories explicitly when several machines' output has been collected side by side elsewhere. It tags every row with its machine and which sweep produced it, and writes `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one PNG per figure.
 
 ### Where we ran it
 
