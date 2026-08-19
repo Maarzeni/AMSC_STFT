@@ -150,7 +150,7 @@ jobs:
       # download. The ServerAlive options keep the SSH connection from being
       # dropped while the job sits in the queue.
       - name: Submit SLURM job via sbatch and wait for completion
-        timeout-minutes: 60
+        timeout-minutes: 40
         env:
           SSH_OPTS: "-i ~/.ssh/cineca_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=30"
         run: |

@@ -54,6 +54,7 @@
 #include "window/HannWindow.hpp"
 
 #include <complex>
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -146,6 +147,25 @@ int main(int argc, char** argv) {
     // machine's real core count is no longer readable.
     const int nThreads = maxThreads();
 
+    // The granularity pair runs on a SMALLER thread budget than the rest of
+    // this file, and both of its arms use that same smaller budget so the
+    // comparison stays fair.
+    //
+    // The reason is ParallelFFT: it degrades sharply once the threads
+    // outnumber the work inside a 1024-point transform — 64 ms against 0.2 at
+    // sixteen threads, measured — and the granularity arm pays that once per
+    // FRAME. At ten thousand frames and thirty-two threads a single repetition
+    // runs for minutes, which is what killed job 21842075 at its wall clock.
+    // Eight threads is well inside the range where ParallelFFT still behaves,
+    // and the question being asked — across frames or inside the transform —
+    // does not need the whole machine to be answered.
+    const int granThreads = [nThreads] {
+        const char* env = std::getenv("AMSC_GRANULARITY_THREADS");
+        const int wanted = env ? std::atoi(env) : 8;
+        return std::max(1, std::min(nThreads, wanted));
+    }();
+    const bool withGranularity = std::getenv("AMSC_SKIP_GRANULARITY") == nullptr;
+
     // The same analyzer, with the thread budget spent inside each transform
     // instead of across the frames. The factory captures nThreads by value:
     // ParallelFFT would otherwise read the ambient count when built, and the
@@ -153,7 +173,7 @@ int main(int argc, char** argv) {
     // loop rather than leaving it parallel independently of it.
     STFTAnalyzer<ParallelFFT, HannWindow> transformAnalyzer(
         frame, hop, SR,
-        [n = static_cast<std::size_t>(nThreads)] { return ParallelFFT(n); },
+        [n = static_cast<std::size_t>(granThreads)] { return ParallelFFT(n); },
         Parallelism::Transform);
 
     for (const double sec : durations) {
@@ -180,21 +200,30 @@ int main(int argc, char** argv) {
                            1, nThreads, nThreads, std::nullopt,
                            static_cast<long long>(frames), sec, sOmp, sSerial.mean);
 
-        // setThreads() does not reach this measurement: under
-        // Parallelism::Transform the frame loop has no OpenMP region, and the
-        // engine's thread count was fixed when the factory captured it.
-        const bench::Stats sGranular =
+        if (!withGranularity) continue;
+
+        // Across the frames, on the reduced budget. Measured rather than reused
+        // from sOmp above: that row ran on all nThreads, and comparing it with
+        // an arm limited to granThreads would make the budget the difference
+        // instead of the granularity.
+        setThreads(granThreads);
+        const bench::Stats sAcross = bench::benchSTFT(analyzer, signal, warmup, reps);
+        bench::writeTiming(std::cout, "stft_granularity",
+                           "OpenMP frames + IterativeFFT (" +
+                               std::to_string(granThreads) + " thr)",
+                           1, granThreads, granThreads, std::nullopt,
+                           static_cast<long long>(frames), sec, sAcross, sSerial.mean);
+
+        // Inside each transform, same budget. setThreads() does not reach this
+        // one: under Parallelism::Transform the frame loop has no OpenMP region
+        // and the engine's thread count was fixed when the factory captured it.
+        const bench::Stats sWithin =
             bench::benchSTFT(transformAnalyzer, signal, warmup, reps);
         bench::writeTiming(std::cout, "stft_granularity",
                            "sequential frames + ParallelFFT (" +
-                               std::to_string(nThreads) + " thr)",
-                           1, nThreads, nThreads, std::nullopt,
-                           static_cast<long long>(frames), sec, sGranular, sSerial.mean);
-        bench::writeTiming(std::cout, "stft_granularity",
-                           "OpenMP frames + IterativeFFT (" +
-                               std::to_string(nThreads) + " thr)",
-                           1, nThreads, nThreads, std::nullopt,
-                           static_cast<long long>(frames), sec, sOmp, sSerial.mean);
+                               std::to_string(granThreads) + " thr)",
+                           1, granThreads, granThreads, std::nullopt,
+                           static_cast<long long>(frames), sec, sWithin, sSerial.mean);
     }
 
     return 0;

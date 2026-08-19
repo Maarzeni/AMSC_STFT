@@ -449,7 +449,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
         # computation, so speedup should read 1.00 — whatever it reads instead
         # is this machine's noise floor, measured for free.
         csv_append "${THREADFILE}" \
-            env OMP_NUM_THREADS=${T} \
+            env AMSC_SKIP_GRANULARITY=1 OMP_NUM_THREADS=${T} \
             "${BUILD_DIR}/benchmarks/benchmark_Main" \
             ${BENCH_ARGS} "${DURATION}"
         note_status "${PIPESTATUS[0]}" "threads-${T}-${DURATION}s"

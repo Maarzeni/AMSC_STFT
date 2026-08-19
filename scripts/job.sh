@@ -2,7 +2,7 @@
 #SBATCH --job-name=AMSC_STFT         ## Job name
 #SBATCH --output=amsc_stft_job.out   ## Standard output file
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
-#SBATCH --time=01:00:00              ## Maximum job duration
+#SBATCH --time=04:00:00              ## Maximum job duration
 #SBATCH --nodes=1                    ## Single node (see MPI note below)
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
@@ -16,10 +16,11 @@
 ## core-hours unspent, which is what makes g100_usr_prod accept the job: an
 ## expired window is what used to answer "invalid account or expired budget".
 ##
-## 8 ranks x 4 threads = 32 cores on one node. One hour of walltime against
-## roughly twenty minutes of measurement: enough margin that a slow queue or a
-## busy node cannot truncate the run, since a job killed at the limit loses
-## every number it had already taken.
+## 8 ranks x 4 threads = 32 cores on one node, four hours of walltime. The
+## margin is deliberate: job 21842075 was killed at a one-hour limit having
+## produced nothing, because the granularity row costs frames x ParallelFFT,
+## and ParallelFFT degrades badly once the threads outnumber the work in a
+## 1024-point transform. Long audio multiplies that by ten thousand frames.
 ##
 ## Nothing here derives from the old serial-queue setup: TOTAL_CORES and
 ## `mpirun -np` both read the SBATCH values above, and run_suite.sh sizes its
@@ -77,27 +78,29 @@ export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"
 
-# ── Measurement profile ──────────────────────────────────────────────────────
-# LIGHT by design. The dense alternative below runs for about three hours, and
-# more than half of that is the benchmark re-measuring its SERIAL baseline once
-# per block — a number that depends on neither the rank count nor the thread
-# count being swept. Cutting the sweep cuts that waste with it.
+# ── Measurement configuration ────────────────────────────────────────────────
+# Kept in one place so the CI run and a manual `sbatch scripts/job.sh` measure
+# exactly the same thing.
 #
-# Two workloads rather than four is also the better figure: two curves plus the
-# ideal line read at a glance, four turn a slide into spaghetti.
+# The granularity pair runs on eight threads regardless of the allocation (see
+# AMSC_GRANULARITY_THREADS in benchmark_Main.cpp): its ParallelFFT arm costs
+# frames x transform, and ParallelFFT degrades once the threads outnumber the
+# work in a 1024-point transform. Thirty-two threads over ten thousand frames
+# is what ran job 21842075 into its wall clock.
 #
-# Dense variant, for a final run when the results are settled (~3 h):
+# Dense variant for the final run, once the results are settled (~3 h):
 #   BENCH_ARGS="15 3 1024 512"
 #   SCALING_RANKS="1 2 4 6 8 10 12 14 16 20 24 28 32"
 #   THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 32"
-#   SCALING_DURATIONS="5 30 120 300"; MEM_DURATION=120; WEAK_BASE=10
+#   SCALING_DURATIONS="5 30 120"; MEM_DURATION=120; WEAK_BASE=10
 for v in \
     "BENCH_ARGS=7 2 1024 512" \
     "SCALING_RANKS=1 2 4 8 16 24 32" \
     "THREAD_LIST=1 2 4 8 16 24 32" \
-    "SCALING_DURATIONS=15 120" \
-    "MEM_DURATION=60" \
-    "WEAK_BASE=5"; do
+    "SCALING_DURATIONS=5 15" \
+    "MEM_DURATION=30" \
+    "WEAK_BASE=5" \
+    "AMSC_GRANULARITY_THREADS=8"; do
     export "SINGULARITYENV_${v}"
     export "APPTAINERENV_${v}"
 done
