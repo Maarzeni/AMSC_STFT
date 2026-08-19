@@ -82,11 +82,17 @@ export APPTAINERENV_PREFIX="cluster"
 # Kept in one place so the CI run and a manual `sbatch scripts/job.sh` measure
 # exactly the same thing.
 #
-# The granularity pair runs on eight threads regardless of the allocation (see
-# AMSC_GRANULARITY_THREADS in benchmark_Main.cpp): its ParallelFFT arm costs
-# frames x transform, and ParallelFFT degrades once the threads outnumber the
-# work in a 1024-point transform. Thirty-two threads over ten thousand frames
-# is what ran job 21842075 into its wall clock.
+# Three workloads spanning sixty-fold. The long one is the point: efficiency at
+# high worker counts is set by how much work each worker gets, and at 32 workers
+# five seconds of audio leaves each of them about thirteen frames — too few to
+# say anything about the implementation. Five minutes leaves eight hundred.
+#
+# The granularity pair opts out of that: it is pinned to eight threads and to
+# workloads up to thirty seconds, because its ParallelFFT arm costs frames x
+# transform and ParallelFFT degrades once the threads outnumber the work inside
+# a 1024-point transform. Thirty-two threads over ten thousand frames is what
+# ran job 21842075 into its wall clock; the question it answers needs neither
+# the whole machine nor a long signal.
 #
 # Dense variant for the final run, once the results are settled (~3 h):
 #   BENCH_ARGS="15 3 1024 512"
@@ -97,10 +103,11 @@ for v in \
     "BENCH_ARGS=7 2 1024 512" \
     "SCALING_RANKS=1 2 4 8 16 24 32" \
     "THREAD_LIST=1 2 4 8 16 24 32" \
-    "SCALING_DURATIONS=5 15" \
+    "SCALING_DURATIONS=5 15 300" \
     "MEM_DURATION=30" \
     "WEAK_BASE=5" \
-    "AMSC_GRANULARITY_THREADS=8"; do
+    "AMSC_GRANULARITY_THREADS=8" \
+    "AMSC_GRANULARITY_MAX_SECONDS=30"; do
     export "SINGULARITYENV_${v}"
     export "APPTAINERENV_${v}"
 done

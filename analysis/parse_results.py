@@ -69,6 +69,13 @@ def main() -> int:
                     default=[Path("results/results_benchmark")],
                     help="directories holding <machine>_*.csv result files "
                          "(default: results/results_benchmark/)")
+    ap.add_argument("--label", action="append", default=None,
+                    help="machine name for the corresponding positional "
+                         "directory, in order. Without it the name comes from "
+                         "the file prefix, which makes two runs of the same job "
+                         "indistinguishable: both write cluster_*.csv, and "
+                         "merging them would average two separate experiments "
+                         "into one set of figures.")
     ap.add_argument("-o", "--out", type=Path,
                     default=Path("results/results_analysis/csv"),
                     help="output directory (default: results/results_analysis/csv/)")
@@ -79,7 +86,9 @@ def main() -> int:
     memory: list[dict] = []
     seen = 0
 
-    for d in args.dirs:
+    labels = list(args.label or [])
+    for i, d in enumerate(args.dirs):
+        label = labels[i] if i < len(labels) else None
         if not d.is_dir():
             print(f"skipping {d}: not a directory", file=sys.stderr)
             continue
@@ -88,7 +97,8 @@ def main() -> int:
             # machine never contains an underscore (run_suite.sh sets it to
             # cluster/github/local or an explicit PREFIX), so the first one
             # is always the split point.
-            machine, _, source = path.stem.partition("_")
+            derived, _, source = path.stem.partition("_")
+            machine = label or derived
             for row in read_rows(path, machine, source):
                 kind = row.get("kind")
                 if kind == "timing":

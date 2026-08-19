@@ -497,8 +497,11 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
     source  = "benchmark_mpi"   if distributed else "benchmark_openmp"
     base_section = "mpi" if distributed else "stft"
     serial_mark  = "serial (1 rank" if distributed else "1 thread"
-    LABELS = {"OpenMP frames": "parallel across frames\n(OpenMP loop + IterativeFFT)",
-              "sequential frames": "parallel within transform\n(sequential loop + ParallelFFT)"}
+    # One line each, not two: this legend sits inside the axes, and a box twice
+    # as tall hides twice as much of the curves. What the two arms are made of
+    # goes in the parameter box instead, where it costs no plot area.
+    LABELS = {"OpenMP frames": "across frames",
+              "sequential frames": "within each transform"}
     COLORS = {"OpenMP frames": ALGO_COLOR["IterativeFFT"],
               "sequential frames": ALGO_COLOR["ParallelFFT"]}
 
@@ -554,9 +557,9 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
     ax.get_xaxis().set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.set_xlabel("audio length [s]")
     ax.set_ylabel("speedup over serial STFT")
-    # The ideal line sits at the top and the curves climb to the right, so the
-    # lower left is the one corner that is reliably empty.
-    ax.legend(loc="lower left")
+    # "best" rather than a fixed corner: which corner is free depends on the
+    # data, and pinning it is how a legend ends up sitting on a curve.
+    ax.legend(loc="best")
     ax.set_title("Thread granularity: across frames or inside the FFT"
                  + (" — per rank" if distributed else ""),
                  color=INK, loc="left", fontsize=15.5, pad=14)
@@ -569,6 +572,11 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
                     ("baseline", "serial STFT,"),
                     ("", "1 thread, same"),
                     ("", "workload"),
+                    ("", ""),
+                    ("across frames", "OpenMP loop +"),
+                    ("", "IterativeFFT"),
+                    ("within transform", "sequential loop +"),
+                    ("", "ParallelFFT"),
                     ("", ""),
                     ("note", "both rows spend"),
                     ("", "the same budget;"),

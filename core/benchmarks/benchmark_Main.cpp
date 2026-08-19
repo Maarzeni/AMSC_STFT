@@ -166,6 +166,18 @@ int main(int argc, char** argv) {
     }();
     const bool withGranularity = std::getenv("AMSC_SKIP_GRANULARITY") == nullptr;
 
+    // The granularity pair also stops at a workload ceiling, independently of
+    // the sweeps around it. Its ParallelFFT arm costs frames x transform, so a
+    // five-minute signal would dominate the run while answering a question —
+    // across frames or inside the transform — that a short signal already
+    // answers. The other sections want the long workloads precisely because
+    // efficiency at high worker counts depends on how much work each worker
+    // gets, so the two needs are separated rather than compromised.
+    const double granMaxSeconds = [] {
+        const char* env = std::getenv("AMSC_GRANULARITY_MAX_SECONDS");
+        return env ? std::atof(env) : 30.0;
+    }();
+
     // The same analyzer, with the thread budget spent inside each transform
     // instead of across the frames. The factory captures nThreads by value:
     // ParallelFFT would otherwise read the ambient count when built, and the
@@ -200,7 +212,7 @@ int main(int argc, char** argv) {
                            1, nThreads, nThreads, std::nullopt,
                            static_cast<long long>(frames), sec, sOmp, sSerial.mean);
 
-        if (!withGranularity) continue;
+        if (!withGranularity || sec > granMaxSeconds) continue;
 
         // Across the frames, on the reduced budget. Measured rather than reused
         // from sOmp above: that row ran on all nThreads, and comparing it with
