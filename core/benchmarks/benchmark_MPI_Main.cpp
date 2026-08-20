@@ -45,7 +45,7 @@
  *   mpirun -np 2 ./benchmark_MPI_Main
  *   OMP_NUM_THREADS=4 mpirun -np 2 ./benchmark_MPI_Main            # hybrid
  *   mpirun -np 2 ./benchmark_MPI_Main 7 2 8192 4096 20             # coarser frames
- *   mpirun -np 2 ./benchmark_MPI_Main 7 2 1024 512 30 bcast        # old strategy
+ *   mpirun -np 2 ./benchmark_MPI_Main 7 2 1024 512 30 bcast        # broadcast strategy
  *
  * `hop` may be given as 0, meaning frame/2.  `strategy` is `scatter` (default)
  * or `bcast`.  The rank count cannot be varied from inside the program — it is
@@ -119,7 +119,7 @@ double peakRssKiB() {
     std::ifstream status("/proc/self/status");
     std::string   line;
     while (std::getline(status, line)) {
-        if (line.rfind("VmHWM:", 0) == 0) {          // "VmHWM:\t  123456 kB"
+        if (line.starts_with("VmHWM:")) {             // "VmHWM:\t  123456 kB"
             std::istringstream in(line.substr(6));
             double kib = 0.0;
             in >> kib;
@@ -132,9 +132,9 @@ double peakRssKiB() {
 
 /// Spread of a per-rank quantity across the communicator (valid on root).
 struct Spread {
-    double min = 0.0;
-    double max = 0.0;
-    double avg = 0.0;
+    double min = 0.0;  ///< smallest per-rank value
+    double max = 0.0;  ///< largest per-rank value
+    double avg = 0.0;  ///< mean per-rank value
 };
 
 /**
@@ -153,6 +153,8 @@ Spread reduceSpread(const MPIContext& ctx, double local) {
     return s;
 }
 
+/// @brief Writes one `kind = "memory_analytic"` row (see the schema in
+///        benchmark_Suite.hpp).
 void writeAnalyticRow(const std::string& strategy, int ranks,
                       std::size_t frames, double workloadS,
                       const Spread& samplesHeld) {
@@ -169,6 +171,8 @@ void writeAnalyticRow(const std::string& strategy, int ranks,
     bench::writeRow(std::cout, r);
 }
 
+/// @brief Writes one `kind = "memory_rss"` row (see the schema in
+///        benchmark_Suite.hpp).
 void writeRssRow(const std::string& strategy, int ranks,
                  const Spread& kib, bool measurable) {
     bench::Row r;
@@ -183,6 +187,7 @@ void writeRssRow(const std::string& strategy, int ranks,
     bench::writeRow(std::cout, r);
 }
 
+/// @brief OpenMP's current max thread count, or 1 if built without OpenMP.
 int maxThreads() {
 #ifdef _OPENMP
     return omp_get_max_threads();
@@ -191,6 +196,7 @@ int maxThreads() {
 #endif
 }
 
+/// @brief Sets OpenMP's thread count; a no-op if built without OpenMP.
 void setThreads([[maybe_unused]] int n) {
 #ifdef _OPENMP
     omp_set_num_threads(n);

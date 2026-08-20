@@ -25,11 +25,11 @@
  *
  *      Both rows run through STFTAnalyzer itself: Parallelism::Frames for
  *      the first, Parallelism::Transform plus a ParallelFFT factory for the
- *      second. The factory fixes the engine's thread count at capture time,
- *      which is what keeps the transform parallel while the frame loop is
- *      sequential — the two used to read the same ambient count, and this
- *      row was a hand-written replica of the analyzer's frame loop to work
- *      around it.
+ *      second. The factory fixes the engine's thread count at capture time;
+ *      without that, ParallelFFT would read the ambient OpenMP thread count
+ *      at each call, and the setThreads(1) further down would collapse it to
+ *      serial along with the frame loop instead of leaving it parallel
+ *      independently of it.
  *
  * Usage:
  *   ./benchmark_Main [reps] [warmup] [frame] [hop] [seconds]
@@ -37,6 +37,11 @@
  *   ./benchmark_Main 7 2 8192 4096 20      # coarser frames, 20 s of audio
  *
  * `hop` may be given as 0, meaning frame/2.
+ *
+ * Environment variables, for the granularity pair only:
+ *   AMSC_GRANULARITY_THREADS      thread budget for that pair (default 8)
+ *   AMSC_GRANULARITY_MAX_SECONDS  workload ceiling in seconds (default 30)
+ *   AMSC_SKIP_GRANULARITY         if set (any value), skip the pair entirely
  *
  * Output is CSV on stdout, nothing else — see benchmark_Suite.hpp for the
  * column schema and how to read it. MPI / hybrid STFT benchmarks: see
@@ -53,6 +58,7 @@
 #include "stft/STFTAnalyzer.hpp"
 #include "window/HannWindow.hpp"
 
+#include <array>
 #include <complex>
 #include <algorithm>
 #include <cstdlib>
@@ -68,6 +74,7 @@ using namespace stft;
 
 namespace {
 
+/// @brief OpenMP's current max thread count, or 1 if built without OpenMP.
 int maxThreads() {
 #ifdef _OPENMP
     return omp_get_max_threads();
@@ -76,6 +83,7 @@ int maxThreads() {
 #endif
 }
 
+/// @brief Sets OpenMP's thread count; a no-op if built without OpenMP.
 void setThreads([[maybe_unused]] int n) {
 #ifdef _OPENMP
     omp_set_num_threads(n);
@@ -110,9 +118,8 @@ int main(int argc, char** argv) {
     bench::writeHeader(std::cout);
 
     // ─── FFT engines ────────────────────────────────────────────────────────
-    const std::vector<std::size_t> fftSizes = {
-        1u << 10, 1u << 12, 1u << 14, 1u << 16, 1u << 18
-    };
+    static constexpr auto fftSizes = std::to_array<std::size_t>(
+        {1u << 10, 1u << 12, 1u << 14, 1u << 16, 1u << 18});
 
     for (std::size_t n : fftSizes) {
         const auto input = bench::makeComplexInput(n);
@@ -155,10 +162,10 @@ int main(int argc, char** argv) {
     // outnumber the work inside a 1024-point transform — 64 ms against 0.2 at
     // sixteen threads, measured — and the granularity arm pays that once per
     // FRAME. At ten thousand frames and thirty-two threads a single repetition
-    // runs for minutes, which is what killed job 21842075 at its wall clock.
-    // Eight threads is well inside the range where ParallelFFT still behaves,
-    // and the question being asked — across frames or inside the transform —
-    // does not need the whole machine to be answered.
+    // can run for minutes. Eight threads is well inside the range where
+    // ParallelFFT still behaves, and the question being asked — across
+    // frames or inside the transform — does not need the whole machine to
+    // be answered.
     const int granThreads = [nThreads] {
         const char* env = std::getenv("AMSC_GRANULARITY_THREADS");
         const int wanted = env ? std::atoi(env) : 8;

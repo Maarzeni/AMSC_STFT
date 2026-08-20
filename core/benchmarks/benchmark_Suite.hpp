@@ -65,6 +65,7 @@ struct Stats {
     int    reps   = 0;     ///< number of timed repetitions
 };
 
+/// @brief Min / mean / median / sample stddev over a set of timings (ms).
 inline Stats computeStats(std::vector<double> samplesMs) {
     Stats s;
     s.reps = static_cast<int>(samplesMs.size());
@@ -91,6 +92,8 @@ inline Stats computeStats(std::vector<double> samplesMs) {
 
 // ─── Prevent the optimiser from discarding benchmarked results ────────────────
 
+/// @brief Forces `value` to look "used" to the compiler, so a benchmarked
+///        computation whose result is otherwise unread is not optimised away.
 template<typename T>
 inline void doNotOptimize(const T& value) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -210,6 +213,7 @@ struct Row {
     std::optional<double> minMib, maxMib, avgMib;
 };
 
+/// @brief Writes the CSV column header line matching the Row schema below.
 inline void writeHeader(std::ostream& os) {
     os << "kind,section,variant,strategy,ranks,threads,omp_threads,size,frames,"
           "workload_s,min_ms,mean_ms,median_ms,stddev_ms,speedup,"
@@ -233,6 +237,7 @@ inline void putQuoted(std::ostream& os, const std::string& s) {
 
 } // namespace detail
 
+/// @brief Writes one CSV row (leaving unset optional fields blank, per Row).
 inline void writeRow(std::ostream& os, const Row& r) {
     using detail::put;
     using detail::putQuoted;
