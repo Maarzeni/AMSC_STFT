@@ -17,15 +17,15 @@
 #PBS -N amsc_stft
 #PBS -q cpu
 #PBS -l select=1:ncpus=28:mpiprocs=28
-#PBS -l walltime=01:30:00
+#PBS -l walltime=03:00:00
 #PBS -j oe
 
 ## Resources: one node, 28 hardware threads, all usable as MPI slots.
 ## 28 is the ceiling, not a choice: `qstat -Qf cpu` reports resources_max.ncpus
 ## = 28, so a larger request is refused however idle the 112-thread nodes look.
-## Walltime, by contrast, is cheap — the queue allows 48 h — so 90 minutes
-## against roughly 20 of measurement is pure insurance: a job killed at the
-## limit loses every number it had already taken.
+## Walltime, by contrast, is cheap — the queue allows 48 h — so three hours
+## against roughly 35 minutes of measurement is pure insurance: a job killed at
+## the limit loses every number it had already taken.
 
 set -uo pipefail
 
@@ -82,26 +82,35 @@ export PREFIX=mox-cpu
 export BUILD_DIR="${WORKDIR}/build"
 export RESULTS_DIR="${WORKDIR}/results/results_benchmark"
 export TEST_RESULTS_DIR="${WORKDIR}/results/results_test"
-# ── Measurement profile ──────────────────────────────────────────────────────
-# LIGHT by design. The dense alternative below runs for about three hours, and
-# more than half of that is the benchmark re-measuring its SERIAL baseline once
-# per block — a number that depends on neither the rank count nor the thread
-# count being swept. Cutting the sweep cuts that waste with it.
+# ── Measurement configuration ────────────────────────────────────────────────
+# Mirrors scripts/job.sh, so a MOX run and a CINECA run measure the same thing
+# and their figures can be put side by side. Only the rank ceiling differs: 28
+# here against 32 there, because that is what each queue allows.
 #
-# Two workloads rather than four is also the better figure: two curves plus the
-# ideal line read at a glance, four turn a slide into spaghetti.
+# Three workloads spanning sixty-fold. The long one is the point: efficiency at
+# high worker counts is set by how much work each worker gets, and at 28 workers
+# five seconds of audio leaves each of them about fifteen frames — too few to
+# say anything about the implementation. Five minutes leaves nine hundred.
 #
-# Dense variant, for a final run when the results are settled (~3 h):
+# Denser sweep for a final run, once the results are settled:
 #   BENCH_ARGS="15 3 1024 512"
 #   SCALING_RANKS="1 2 4 6 8 10 12 14 16 18 20 22 24 28"
 #   THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 28"
-#   SCALING_DURATIONS="5 30 120 300"; MEM_DURATION=120; WEAK_BASE=10
 export BENCH_ARGS="7 2 1024 512"
 export SCALING_RANKS="1 2 4 8 16 24 28"
 export THREAD_LIST="1 2 4 8 16 24 28"
-export SCALING_DURATIONS="15 120"
-export MEM_DURATION=60
+export SCALING_DURATIONS="5 15 300"
+export MEM_DURATION=30
 export WEAK_BASE=5
+
+# The granularity pair opts out of the long workloads and of the full thread
+# budget. Its ParallelFFT arm costs frames x transform, and ParallelFFT
+# degrades sharply once the threads outnumber the work inside a 1024-point
+# transform — 64 ms against 0.2 at sixteen threads, measured. Without these two
+# ceilings the pair alone outruns the walltime, which is what happened to
+# CINECA job 21842075.
+export AMSC_GRANULARITY_THREADS=8
+export AMSC_GRANULARITY_MAX_SECONDS=30
 
 bash "${PROJECT}/scripts/run_suite.sh"
 SUITE_STATUS=$?

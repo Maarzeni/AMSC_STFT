@@ -18,9 +18,22 @@ jobs:
 
       # Step 2: [Setup] Install C++ HPC dependencies (CMake, OpenMP, OpenMPI)
       - name: Install System Dependencies
+        # Bounded, non-interactive and retried. An unreachable apt mirror is a
+        # normal hosted-runner event, and without these three the step waits on
+        # it until the six-hour job default — which is how one run burned 47
+        # minutes before being cancelled by hand. Failing in ten minutes says
+        # "mirror trouble, run it again"; hanging says nothing.
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
+          set -e
+          for attempt in 1 2 3; do
+            if sudo -E apt-get update -qq; then break; fi
+            echo "apt-get update failed (attempt ${attempt}/3), retrying..."
+            sleep 15
+          done
+          grep -v '^#' system-deps.txt | xargs sudo -E apt-get install -y
 
       # Step 3: [Build] Configure and compile the C++ project
       - name: Build Project with CMake
@@ -67,6 +80,9 @@ jobs:
 
       # Step 7: [Apptainer] Install Apptainer to build the container
       - name: Install Apptainer
+        # Same bound as the dependency step above, for the same reason: this one
+        # also talks to apt, and to a PPA on top.
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y software-properties-common
