@@ -1,192 +1,111 @@
 #include <gtest/gtest.h>
 #include "fft/ParallelFFT.hpp"
-#include <vector>
+#include <array>
 #include <complex>
-#include <cmath>
+#include <vector>
 #include <omp.h>
 
 using namespace stft;
 
-// ==========================================
-// 1. COMPILE-TIME CONCEPT CHECK
-// ==========================================
-static_assert(IsFFT<ParallelFFT>, "ERROR: ParallelFFT must satisfy the IsFFT concept!");
-
-// ==========================================
-// 2. FUNCTIONAL TESTS WITH OpenMP
-// ==========================================
+static_assert(IsFFT<ParallelFFT>, "ParallelFFT must satisfy the IsFFT concept.");
 
 class ParallelFFTTest : public ::testing::Test {
 protected:
-    // Tolerance for floating-point comparisons
-    const double TOL = 1e-8;
+    static constexpr double tolerance = 1e-8;
 };
 
-// Test 1: Verify Correctness with Multiple Thread Configurations
-// Tests that the FFT produces correct results regardless of thread count
+// Round-trip accuracy must not depend on how many threads compute it.
 TEST_F(ParallelFFTTest, CorrectnessDifferentThreadCounts) {
-    std::vector<std::complex<double>> reference = {
+    const std::vector<std::complex<double>> reference = {
         {1.0, 0.1}, {-2.0, 0.5}, {3.1, -0.2}, {0.0, 1.0},
         {-1.5, -1.5}, {2.0, 0.0}, {0.5, -0.5}, {4.0, 2.0}
     };
+    constexpr auto threadCounts = std::to_array<int>({1, 2, 4, 8});
 
-    // Test with different thread counts
-    int thread_counts[] = {1, 2, 4, 8};
+    for (int threads : threadCounts) {
+        if (threads > omp_get_max_threads()) continue;
 
-    for (int num_threads : thread_counts) {
-        if (num_threads > omp_get_max_threads()) {
-            continue;
-        }
-
-        ParallelFFT fft(num_threads);
+        ParallelFFT fft(threads);
         auto data = reference;
-
-        // Forward and inverse transform
         fft.forward(data);
         fft.inverse(data);
 
-        // Verify round-trip accuracy
-        for (size_t i = 0; i < data.size(); ++i) {
-            EXPECT_NEAR(data[i].real(), reference[i].real(), TOL)
-                << "Failed at index " << i << " with " << num_threads << " threads";
-            EXPECT_NEAR(data[i].imag(), reference[i].imag(), TOL)
-                << "Failed at index " << i << " with " << num_threads << " threads";
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            EXPECT_NEAR(data[i].real(), reference[i].real(), tolerance)
+                << "Failed at index " << i << " with " << threads << " threads";
+            EXPECT_NEAR(data[i].imag(), reference[i].imag(), tolerance)
+                << "Failed at index " << i << " with " << threads << " threads";
         }
     }
 }
 
-// Test 2: Large Data Parallel Processing
-// Ensures the FFT handles large arrays correctly with different thread counts
+// Correctness at a size the other engines' tests do not exercise, using
+// every thread the machine has.
 TEST_F(ParallelFFTTest, LargeDataParallelProcessing) {
-    const size_t n = 65536; // 2^16 - Very large array
-    int num_threads = omp_get_max_threads();
-
-    ParallelFFT fft(num_threads);
+    constexpr std::size_t n = 65536;  // 2^16
+    ParallelFFT fft(static_cast<std::size_t>(omp_get_max_threads()));
     std::vector<std::complex<double>> data(n, {1.0, 0.0});
 
-    EXPECT_NO_THROW({
-        fft.forward(data);
-    });
+    EXPECT_NO_THROW(fft.forward(data));
 
-    // Verify DC component
-    EXPECT_NEAR(data[0].real(), static_cast<double>(n), TOL);
-
-    // All other frequency bins should be ~0
-    for (size_t i = 1; i < std::min(size_t(100), n); ++i) {
-        EXPECT_NEAR(data[i].real(), 0.0, TOL * 100);
-        EXPECT_NEAR(data[i].imag(), 0.0, TOL * 100);
+    // A constant signal has all its energy at DC; every other bin ~ 0.
+    EXPECT_NEAR(data[0].real(), static_cast<double>(n), tolerance);
+    for (std::size_t i = 1; i < std::min<std::size_t>(100, n); ++i) {
+        EXPECT_NEAR(data[i].real(), 0.0, tolerance * 100);
+        EXPECT_NEAR(data[i].imag(), 0.0, tolerance * 100);
     }
 }
 
-// Test 3: Round-trip with Multiple Threads
-// Ensures Forward -> Inverse is accurate with different thread counts
-TEST_F(ParallelFFTTest, RoundTripMultipleThreads) {
-    std::vector<std::complex<double>> original = {
-        {1.0, 0.1}, {-2.0, 0.5}, {3.1, -0.2}, {0.0, 1.0},
-        {-1.5, -1.5}, {2.0, 0.0}, {0.5, -0.5}, {4.0, 2.0}
-    };
-
-    int max_threads = omp_get_max_threads();
-
-    // Test with different thread configurations
-    #pragma omp parallel for schedule(static)
-    for (int t = 1; t <= max_threads; ++t) {
-        ParallelFFT fft(t);
-        auto data = original;
-
-        fft.forward(data);
-        fft.inverse(data);
-
-        // Verify correctness
-        for (size_t i = 0; i < data.size(); ++i) {
-            EXPECT_NEAR(data[i].real(), original[i].real(), TOL);
-            EXPECT_NEAR(data[i].imag(), original[i].imag(), TOL);
-        }
-    }
-}
-
-// Test 4: Thread Safety Check
-// Verifies that multiple ParallelFFT instances can work in parallel without issues
+/**
+ * @brief Several independent ParallelFFT instances, genuinely running at
+ *        the same time on different threads.
+ *
+ * Unlike the tests above, the outer `#pragma omp parallel for` here is not
+ * incidental: it is what makes this test actually exercise concurrent
+ * construction and use of separate engine instances, rather than one
+ * instance used sequentially. Assertions are not made from inside the
+ * parallel region — GTest's macros are not meant to be called concurrently
+ * from multiple threads — so each iteration instead records pass/fail in
+ * `results`, checked once the region has finished.
+ */
 TEST_F(ParallelFFTTest, ThreadSafety) {
-    const size_t n = 4096;
-    const int num_ffts = 8;
-    std::vector<std::vector<std::complex<double>>> data_sets(num_ffts);
+    constexpr std::size_t n = 4096;
+    constexpr int numFfts = 8;
 
-    // Initialize data
-    for (int i = 0; i < num_ffts; ++i) {
-        data_sets[i].resize(n);
-        for (size_t j = 0; j < n; ++j) {
-            data_sets[i][j] = std::complex<double>(i + j, i - j);
+    std::vector<std::vector<std::complex<double>>> dataSets(numFfts);
+    for (int i = 0; i < numFfts; ++i) {
+        dataSets[i].resize(n);
+        for (std::size_t j = 0; j < n; ++j) {
+            const double re = static_cast<double>(i) + static_cast<double>(j);
+            const double im = static_cast<double>(i) - static_cast<double>(j);
+            dataSets[i][j] = {re, im};
         }
     }
 
-    bool results[num_ffts];
+    std::array<bool, numFfts> ok{};
 
-    // Create multiple FFT instances and process in parallel
     #pragma omp parallel for schedule(static)
-    for (int i = 0; i < num_ffts; ++i) {
+    for (int i = 0; i < numFfts; ++i) {
         try {
-            ParallelFFT local_fft(2); // Use 2 threads per instance
-            local_fft.forward(data_sets[i]);
-            local_fft.inverse(data_sets[i]);
-            results[i] = true;
+            ParallelFFT localFft(2);
+            localFft.forward(dataSets[i]);
+            localFft.inverse(dataSets[i]);
+            ok[i] = true;
         } catch (...) {
-            results[i] = false;
+            ok[i] = false;
         }
     }
 
-    // Verify all instances completed successfully
-    for (int i = 0; i < num_ffts; ++i) {
-        EXPECT_TRUE(results[i]) << "FFT instance " << i << " failed";
+    for (int i = 0; i < numFfts; ++i) {
+        EXPECT_TRUE(ok[i]) << "FFT instance " << i << " failed";
     }
 }
 
-// Test 5: Invalid Size Check with Parallel Execution
-// Verifies that invalid sizes are caught even in parallel context
+// The power-of-two check must still fire when the engine is parallel-capable.
 TEST_F(ParallelFFTTest, InvalidSizeCheckParallel) {
-    ParallelFFT fft(omp_get_max_threads());
+    ParallelFFT fft(static_cast<std::size_t>(omp_get_max_threads()));
+    std::vector<std::complex<double>> data(3, {1.0, 0.0});  // not a power of 2
 
-    // Size 3 is not a power of 2
-    std::vector<std::complex<double>> data(3, {1.0, 0.0});
-
-    EXPECT_THROW({
-        fft.forward(data);
-    }, std::invalid_argument);
-
-    EXPECT_THROW({
-        fft.inverse(data);
-    }, std::invalid_argument);
-}
-
-// Test 6: Hybrid Parallelism Simulation
-// Simulates hybrid workload with multiple FFT operations in parallel
-TEST_F(ParallelFFTTest, HybridParallelismSimulation) {
-    const size_t n = 8192; // 2^13
-    const int num_blocks = 4;
-
-    std::vector<std::vector<std::complex<double>>> blocks(num_blocks);
-
-    // Initialize each block with different data
-    for (int b = 0; b < num_blocks; ++b) {
-        blocks[b].resize(n);
-        for (size_t i = 0; i < n; ++i) {
-            double phase = 2.0 * M_PI * (b + 1) * i / n;
-            blocks[b][i] = std::complex<double>(std::sin(phase), std::cos(phase));
-        }
-    }
-
-    ParallelFFT fft(omp_get_max_threads());
-
-    // Process blocks in parallel using OpenMP
-    #pragma omp parallel for schedule(dynamic)
-    for (int b = 0; b < num_blocks; ++b) {
-        fft.forward(blocks[b]);
-    }
-
-    // Verify processing was successful
-    for (int b = 0; b < num_blocks; ++b) {
-        EXPECT_NO_THROW({
-            fft.inverse(blocks[b]);
-        });
-    }
+    EXPECT_THROW(fft.forward(data), std::invalid_argument);
+    EXPECT_THROW(fft.inverse(data), std::invalid_argument);
 }

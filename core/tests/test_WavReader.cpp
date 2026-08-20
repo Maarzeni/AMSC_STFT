@@ -1,48 +1,25 @@
 #include <gtest/gtest.h>
 #include "audio/WavReader.hpp"
-#include <fstream>
-#include <iostream>
-#include <algorithm>
+#include <filesystem>
+#include <string>
 
 using namespace stft;
 
-// Absolute path baked in by CMake (target_compile_definitions), so the fixture
-// is found no matter which directory ctest is invoked from. A path relative to
-// the working directory silently turned this test into a permanent skip.
 #ifndef TEST_DATA_DIR
-#define TEST_DATA_DIR "../tests/data"
+#error "TEST_DATA_DIR must be supplied by CMake (see tests/CMakeLists.txt)"
 #endif
 
-// Helper to check if a file exists
-bool fileExists(const std::string& name) {
-    std::ifstream f(name.c_str());
-    return f.good();
-}
-
 TEST(WavReaderTest, LoadValidFile) {
+    const std::string testPath = std::string(TEST_DATA_DIR) + "/test_audio.wav";
 
-    std::string testPath = std::string(TEST_DATA_DIR) + "/test_audio.wav";
-
-    if (!fileExists(testPath)) {
+    if (!std::filesystem::exists(testPath)) {
         GTEST_SKIP() << "test_audio.wav not found in " << TEST_DATA_DIR;
     }
 
     auto [samples, sampleRate] = WavReader::load(testPath);
 
-    // Basic checks
-    EXPECT_GT(sampleRate, 0);
-    EXPECT_GT(samples.size(), 0);
-
-    // DEBUG OUTPUT (useful for now)
-    std::cout << "\n=== WAV DEBUG INFO ===" << std::endl;
-    std::cout << "Sample rate: " << sampleRate << std::endl;
-    std::cout << "Number of samples: " << samples.size() << std::endl;
-
-    std::cout << "First 20 samples:" << std::endl;
-    for (size_t i = 0; i < std::min<size_t>(20, samples.size()); i++) {
-        std::cout << samples[i] << std::endl;
-    }
-    std::cout << "======================\n" << std::endl;
+    EXPECT_GT(sampleRate, 0u);
+    EXPECT_GT(samples.size(), 0u);
 }
 
 TEST(WavReaderTest, ThrowsOnMissingFile) {
