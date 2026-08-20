@@ -63,11 +63,17 @@ amsc_stft_job.*
 *.png
 *.mp3
 *.wav
-# ...except the two audio files under core/examples/data/. They are inputs, not
-# output: the examples analyse them, and test_WavReader reads test_audio.wav —
-# without it that test does not fail, it silently skips, which is worse.
-!core/examples/data/test_audio.wav
-!core/examples/data/scale.wav
+# ...except everything under core/examples/data/. Those are inputs, not output:
+# the examples analyse them, and test_WavReader reads test_audio.wav — without
+# it that test does not fail, it silently skips, which is worse. The four demo
+# signals are regenerated exactly by scripts/make_demo_audio.py, but are kept in
+# the tree so that a fresh clone can run the examples straight away.
+!core/examples/data/*.wav
+
+# ...and except the figures used by the report, which are spectrograms produced
+# by the examples and then re-encoded by analysis/prepare_figures.py. They are
+# checked in because reproducing them means building the project first.
+!docs/figures/*.png
 
 # ── Containers ───────────────────────────────────────────────────────────────
 *.sif
