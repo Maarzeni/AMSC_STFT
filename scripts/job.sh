@@ -12,19 +12,19 @@
 
 ## ── Resources ────────────────────────────────────────────────────────────────
 ## Production partition on dedicated compute nodes, charged to tra26_TRNPLM.
-## `saldo -b` reports the project open until 2026-09-30 with 3728 of 6000
-## core-hours unspent, which is what makes g100_usr_prod accept the job: an
-## expired window is what used to answer "invalid account or expired budget".
+## g100_usr_prod requires an active account with unspent core-hours; if the
+## job is rejected with "invalid account or expired budget", check both with
+## `saldo -b`.
 ##
 ## 8 ranks x 4 threads = 32 cores on one node, four hours of walltime. The
-## margin is deliberate: job 21842075 was killed at a one-hour limit having
-## produced nothing, because the granularity row costs frames x ParallelFFT,
-## and ParallelFFT degrades badly once the threads outnumber the work in a
-## 1024-point transform. Long audio multiplies that by ten thousand frames.
+## margin is deliberate: the granularity row costs frames x ParallelFFT, and
+## ParallelFFT degrades badly once the threads outnumber the work inside a
+## 1024-point transform — long audio multiplies that by ten thousand frames,
+## so a tight walltime risks losing the whole run to one slow section.
 ##
-## Nothing here derives from the old serial-queue setup: TOTAL_CORES and
-## `mpirun -np` both read the SBATCH values above, and run_suite.sh sizes its
-## sweeps from the SLURM allocation.
+## TOTAL_CORES and `mpirun -np` both read the SBATCH values above, and
+## run_suite.sh sizes its sweeps from the SLURM allocation, so nothing here
+## needs to be kept in sync by hand.
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 # * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
@@ -121,9 +121,7 @@ done
 singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \
     bash "${SLURM_SUBMIT_DIR}/scripts/run_suite.sh"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Examples: WAV → spectrogram PNG
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Examples: WAV → spectrogram PNG ───────────────────────────────────────────
 # Not part of the measured suite: these read a WAV from the HOST and write their
 # PNG back to the HOST, so they belong to the cluster deployment rather than to
 # the benchmarks. STFT_EXAMPLES_DIR is what sends the output to the submit

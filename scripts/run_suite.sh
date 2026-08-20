@@ -137,11 +137,10 @@ csv_append() {  # csv_append <file> <cmd...>
 
     # Only CSV reaches the file; everything reaches the console. The benchmarks
     # print CSV and nothing else, but the ENVIRONMENT injects on the same
-    # stream — mpirun's "No protocol specified" X11 complaint is the one that
+    # stream — mpirun's "No protocol specified" X11 complaint is one that
     # keeps turning up, and unsetting DISPLAY does not stop it. Letting a
     # stray line through is not cosmetic: it shifts every column of the rows
-    # after it and pushes whole sweeps into the wrong output file, which is
-    # exactly what happened before this filter existed.
+    # after it and can push a whole sweep into the wrong output file.
     #
     # Data rows always start with a quoted "kind" field, the header with
     # `kind,` — those two shapes are the whitelist. Errors still print to the
@@ -251,14 +250,20 @@ PHYSICAL_CORES=$(lscpu -p=CORE,SOCKET 2>/dev/null | grep -v '^#' | sort -u | wc 
 # under a SLURM cgroup that reports the whole node instead of the allocation.
 LOGICAL_CPUS=$(nproc)
 
-# How many cores the sweeps may actually use. Under SLURM this is the allocation,
-# NOT what lscpu reports: on a login node lscpu sees all 48 cores of the machine
-# while the job holds 4, and a sweep sized on 48 would trample the other users.
+# How many cores the sweeps may actually use, and the rank list they walk.
+# Under a scheduler this is the ALLOCATION, not what lscpu reports: on a login
+# node lscpu sees every core of the machine while the job holds a handful, and
+# a sweep sized on the former would trample the other users. Computed once
+# here because both the memory comparison (section 4) and the scaling sweeps
+# (sections 5-7) need it.
 if [ -n "${BATCH_CORES}" ] && [ "${BATCH_CORES}" -gt 0 ]; then
     AVAILABLE_CORES=${BATCH_CORES}
 else
     AVAILABLE_CORES=${PHYSICAL_CORES}
 fi
+MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
+SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
+
 export OMPI_MCA_rmaps_base_oversubscribe=1
 
 # mpirun still needs to be told explicitly when we knowingly ask for more
@@ -270,19 +275,6 @@ fi
 # The login nodes export DISPLAY without a reachable X server, which makes the
 # container print "No protocol specified" over the results. Purely cosmetic.
 unset DISPLAY XAUTHORITY
-
-# How many cores the sweeps may actually use, and the rank list they walk. Under
-# a scheduler this is the ALLOCATION, not what lscpu reports: on a login node
-# lscpu sees every core of the machine while the job holds a handful, and a sweep
-# sized on the former would trample the other users. Settled once here because
-# both the memory comparison and the scaling sweep need it.
-if [ -n "${BATCH_CORES}" ] && [ "${BATCH_CORES}" -gt 0 ]; then
-    AVAILABLE_CORES=${BATCH_CORES}
-else
-    AVAILABLE_CORES=${PHYSICAL_CORES}
-fi
-MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
-SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 
 # ── Section 0: what machine produced these numbers ──────────────────────────
 # PHYSICAL_CORES was computed with the MPI settings above; it is printed here
@@ -296,9 +288,9 @@ SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
     echo "ranks x thr  : ${RANKS} x ${THREADS} = ${TOTAL_CORES} workers"
     # Three numbers, three scopes, kept apart on purpose. lscpu describes the
     # whole NODE; nproc respects the scheduler's cgroup and so describes the
-    # ALLOCATION. Printing one as "physical" and the other as "logical" invited
-    # the reading "56 physical, 28 logical", which is impossible and was on the
-    # header of every MOX result file.
+    # ALLOCATION. Printing one as "physical" and the other as "logical" would
+    # invite the misreading "56 physical, 28 logical", which is impossible —
+    # the labels below name what each number actually describes instead.
     echo "cores        : ${AVAILABLE_CORES} usable by this run"
     echo "node total   : ${PHYSICAL_CORES} physical / $(nproc --all 2>/dev/null || echo '?') logical"
     echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"

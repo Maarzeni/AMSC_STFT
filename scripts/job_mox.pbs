@@ -26,10 +26,10 @@
 ## place=excl asks for the node EXCLUSIVELY, and it is not optional for a
 ## timing study. The CPU nodes carry 112 hardware threads, so without it PBS
 ## packs three more 28-thread jobs alongside this one and their load lands in
-## our measurements. Job 28896 ran that way: its serial row — the same
-## computation, re-measured once per sweep block — varied by 110% across the
-## run, against 1% on a quiet machine. Every scaling curve from such a run is
-## noise wearing the shape of a result.
+## our measurements: a shared run was observed to vary by 110% on its serial
+## row — the same computation, re-measured once per sweep block — against
+## roughly 1% on a quiet node. Every scaling curve from such a run is noise
+## wearing the shape of a result.
 ## 28 is the ceiling, not a choice: `qstat -Qf cpu` reports resources_max.ncpus
 ## = 28, so a larger request is refused however idle the 112-thread nodes look.
 ## Walltime, by contrast, is cheap — the queue allows 48 h — so three hours
@@ -116,8 +116,8 @@ export WEAK_BASE=5
 # budget. Its ParallelFFT arm costs frames x transform, and ParallelFFT
 # degrades sharply once the threads outnumber the work inside a 1024-point
 # transform — 64 ms against 0.2 at sixteen threads, measured. Without these two
-# ceilings the pair alone outruns the walltime, which is what happened to
-# CINECA job 21842075.
+# ceilings the pair alone can outrun the walltime; the question it answers
+# needs neither the whole machine nor a long signal.
 export AMSC_GRANULARITY_THREADS=8
 export AMSC_GRANULARITY_MAX_SECONDS=30
 
