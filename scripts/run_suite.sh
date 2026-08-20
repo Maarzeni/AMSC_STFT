@@ -294,7 +294,13 @@ SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
     echo "node         : $(hostname)"
     echo "partition    : ${SLURM_JOB_PARTITION:-${PBS_QUEUE:-n/a (not a batch job)}}"
     echo "ranks x thr  : ${RANKS} x ${THREADS} = ${TOTAL_CORES} workers"
-    echo "cores        : ${PHYSICAL_CORES} physical, ${LOGICAL_CPUS} logical (SMT counts twice)"
+    # Three numbers, three scopes, kept apart on purpose. lscpu describes the
+    # whole NODE; nproc respects the scheduler's cgroup and so describes the
+    # ALLOCATION. Printing one as "physical" and the other as "logical" invited
+    # the reading "56 physical, 28 logical", which is impossible and was on the
+    # header of every MOX result file.
+    echo "cores        : ${AVAILABLE_CORES} usable by this run"
+    echo "node total   : ${PHYSICAL_CORES} physical / $(nproc --all 2>/dev/null || echo '?') logical"
     echo "bench args   : ${BENCH_ARGS}  (reps warmup frame hop)"
     echo "container    : ${APPTAINER_CONTAINER:-${SINGULARITY_CONTAINER:-none (native build)}}"
     echo "date (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -17,10 +17,19 @@
 #PBS -N amsc_stft
 #PBS -q cpu
 #PBS -l select=1:ncpus=28:mpiprocs=28
+#PBS -l place=excl
 #PBS -l walltime=03:00:00
 #PBS -j oe
 
 ## Resources: one node, 28 hardware threads, all usable as MPI slots.
+##
+## place=excl asks for the node EXCLUSIVELY, and it is not optional for a
+## timing study. The CPU nodes carry 112 hardware threads, so without it PBS
+## packs three more 28-thread jobs alongside this one and their load lands in
+## our measurements. Job 28896 ran that way: its serial row — the same
+## computation, re-measured once per sweep block — varied by 110% across the
+## run, against 1% on a quiet machine. Every scaling curve from such a run is
+## noise wearing the shape of a result.
 ## 28 is the ceiling, not a choice: `qstat -Qf cpu` reports resources_max.ncpus
 ## = 28, so a larger request is refused however idle the 112-thread nodes look.
 ## Walltime, by contrast, is cheap — the queue allows 48 h — so three hours
