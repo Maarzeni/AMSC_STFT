@@ -1,70 +1,61 @@
 /**
  * @file ParallelFFT.hpp
- * @brief Multi-threaded FFT implementation using OpenMP and CRTP.
+ * @brief Multi-threaded, in-place Cooley-Tukey FFT (OpenMP).
  */
 
-#ifndef PARALLEL_FFT_HPP
-#define PARALLEL_FFT_HPP
+#pragma once
 
 #include "fft/BaseFFT.hpp"
-#include <vector>
 #include <complex>
 #include <cstddef>
+#include <vector>
 
 namespace stft {
 
 /**
- * @class ParallelFFT
- * @brief Parallel Cooley-Tukey FFT implementation.
+ * @brief Iterative Cooley-Tukey FFT, parallelised across OpenMP threads.
  *
- * Uses OpenMP multi-threading to accelerate bit-reversal and butterfly computation.
+ * The same algorithm as IterativeFFT — bit-reversal, then butterfly stages
+ * of doubling size — with both loops split across `num_threads_` OpenMP
+ * threads. The thread count is fixed once, at construction, and every
+ * parallel region names it explicitly (`num_threads(num_threads_)`) rather
+ * than reading the ambient OpenMP thread count, so an engine's parallelism
+ * cannot change out from under it if something elsewhere in the process
+ * later calls `omp_set_num_threads()`.
  */
 class ParallelFFT : public BaseFFT<ParallelFFT> {
-
     friend class BaseFFT<ParallelFFT>;
 
 public:
-
     /**
-     * @brief Constructs the FFT with a given number of threads.
-     * @param num_threads Number of threads to use (0 = auto-detect).
+     * @brief Constructs the engine with a fixed thread count.
+     * @param num_threads  Threads to use for every transform this instance
+     *                     runs. 0 auto-detects the machine's thread count
+     *                     at construction time (`omp_get_max_threads()`).
      */
-    explicit ParallelFFT(size_t num_threads = 0);
-
-protected:
-
-    /**
-     * @brief Forward FFT implementation.
-     * @param data Input complex vector.
-     */
-    void forward_impl(std::vector<std::complex<double>>& data);
-
-    /**
-     * @brief Inverse FFT implementation.
-     * @param data Input complex vector.
-     */
-    void inverse_impl(std::vector<std::complex<double>>& data);
+    explicit ParallelFFT(std::size_t num_threads = 0);
 
 private:
+    std::size_t num_threads_;
 
-    size_t num_threads_;
+    /// @brief BaseFFT hook: forward transform.
+    void forward_impl(std::vector<std::complex<double>>& data);
 
-    /**
-     * @brief Reorders the input using parallel bit-reversal permutation.
-     */
+    /// @brief BaseFFT hook: inverse transform, including the 1/n normalisation.
+    void inverse_impl(std::vector<std::complex<double>>& data);
+
+    /// @brief Permutes `data` into bit-reversed order, in parallel.
     void bitReverse(std::vector<std::complex<double>>& data) const;
 
     /**
-     * @brief Parallel butterfly computation kernel.
-     * @param data Input complex vector.
-     * @param inverse Enables inverse FFT when true.
+     * @brief Combines bit-reversed `data` in place, stage by stage; each
+     *        stage's independent blocks are split across threads.
+     * @param data     Bit-reversed buffer to transform; its size must be a
+     *                 power of two (checked by the caller).
+     * @param inverse  Runs the inverse transform when true.
      */
-    void butterflyPass(
-        std::vector<std::complex<double>>& data,
-        bool inverse
-    ) const;
+    void butterflyPass(std::vector<std::complex<double>>& data,
+                       bool inverse) const;
 };
 
 } // namespace stft
-
-#endif // PARALLEL_FFT_HPP
