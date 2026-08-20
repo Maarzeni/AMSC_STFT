@@ -27,8 +27,7 @@ TEST(WavReaderTest, LoadValidFile) {
         GTEST_SKIP() << "test_audio.wav not found in " << TEST_DATA_DIR;
     }
 
-    uint32_t sampleRate = 0;
-    auto samples = WavReader::load(testPath, sampleRate);
+    auto [samples, sampleRate] = WavReader::load(testPath);
 
     // Basic checks
     EXPECT_GT(sampleRate, 0);
@@ -47,10 +46,5 @@ TEST(WavReaderTest, LoadValidFile) {
 }
 
 TEST(WavReaderTest, ThrowsOnMissingFile) {
-    uint32_t sampleRate = 0;
-
-    EXPECT_THROW(
-        WavReader::load("non_existent.wav", sampleRate),
-        std::runtime_error
-    );
+    EXPECT_THROW(WavReader::load("non_existent.wav"), std::runtime_error);
 }

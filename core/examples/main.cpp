@@ -224,8 +224,10 @@ int main(int argc, char** argv) {
     std::vector<double> signal;
     std::string stem;
     try {
-        signal = WavReader::load(wavPath, sampleRate);
-        stem   = std::filesystem::path(wavPath).stem().string();
+        auto wav   = WavReader::load(wavPath);
+        signal     = std::move(wav.samples);
+        sampleRate = wav.sampleRate;
+        stem       = std::filesystem::path(wavPath).stem().string();
         std::cout << "Input: " << wavPath << "\n";
     } catch (const std::exception& e) {
         std::cerr << "Note: cannot use '" << wavPath << "' (" << e.what()

@@ -250,7 +250,9 @@ int main(int argc, char** argv) {
 
     if (ctx.isRoot()) {
         try {
-            signal = WavReader::load(wavPath, sampleRate);
+            auto wav   = WavReader::load(wavPath);
+            signal     = std::move(wav.samples);
+            sampleRate = wav.sampleRate;
             std::cout << "Input: " << wavPath << "\n";
         } catch (const std::exception& e) {
             std::cerr << "Note: cannot use '" << wavPath << "' (" << e.what()
