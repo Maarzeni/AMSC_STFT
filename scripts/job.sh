@@ -4,9 +4,10 @@
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
 #SBATCH --time=04:00:00              ## Maximum job duration
 #SBATCH --nodes=1                    ## Single node (see MPI note below)
-#SBATCH --ntasks=8
-#SBATCH --cpus-per-task=4          ## 8 x 4 = 32 cores
-#SBATCH --mem=32G
+#SBATCH --ntasks=24
+#SBATCH --cpus-per-task=2          ## 24 x 2 = 48 cores: the whole node
+#SBATCH --exclusive                ## nobody else on it while we measure
+#SBATCH --mem=0                    ## all of the node's memory
 #SBATCH --partition=g100_usr_prod
 #SBATCH --account=tra26_TRNPLM     ## re-check the name with `saldo -b`
 
@@ -16,11 +17,18 @@
 ## job is rejected with "invalid account or expired budget", check both with
 ## `saldo -b`.
 ##
-## 8 ranks x 4 threads = 32 cores on one node, four hours of walltime. The
-## margin is deliberate: the granularity row costs frames x ParallelFFT, and
-## ParallelFFT degrades badly once the threads outnumber the work inside a
-## 1024-point transform — long audio multiplies that by ten thousand frames,
-## so a tight walltime risks losing the whole run to one slow section.
+## 24 ranks x 2 threads = 48 cores, which is the ENTIRE node: a g100 node has
+## 48 physical cores and no SMT, so this leaves nothing unused. The 24x2 shape
+## rather than 48x1 keeps the hybrid row meaningful — with one thread per rank
+## it would be identical to the MPI-pure row.
+##
+## --exclusive is what stops anyone else landing on the node mid-run. Without
+## it one sweep block came out at twice its own time (103 ms against 52), which
+## is a neighbour's job showing up inside our measurement.
+##
+## Four hours of walltime against roughly forty minutes of measurement: the
+## margin is deliberate, since a job killed at the limit loses every number it
+## had already taken.
 ##
 ## TOTAL_CORES and `mpirun -np` both read the SBATCH values above, and
 ## run_suite.sh sizes its sweeps from the SLURM allocation, so nothing here
@@ -89,9 +97,21 @@ export APPTAINERENV_PREFIX="cluster"
 # exactly the same thing.
 #
 # Three workloads spanning sixty-fold. The long one is the point: efficiency at
-# high worker counts is set by how much work each worker gets, and at 32 workers
-# five seconds of audio leaves each of them about thirteen frames — too few to
-# say anything about the implementation. Five minutes leaves eight hundred.
+# high worker counts is set by how much work each worker gets, and at 48 workers
+# five seconds of audio leaves each of them about nine frames — too few to say
+# anything about the implementation. Five minutes leaves five hundred.
+#
+# The rank sweep stops at 24, not 48, on purpose: its hybrid row runs
+# ranks x 2 threads, so 24 ranks already fill the node exactly. Going further
+# would measure oversubscription — 96 threads on 48 cores — which says nothing
+# about this code. The thread sweep has no such limit: one process with 48
+# threads is still one thread per core.
+#
+# MEM_DURATION is five minutes because the memory figure needs the signal to
+# dominate the footprint. At 30 s the per-rank RSS barely moves (27 MiB against
+# 21 from one rank to 32) since ~20 MiB of process overhead swamps a 1.7 MiB
+# signal; at 300 s it falls from 424 MiB to 37, which is the 1/P the scatter
+# is there to show.
 #
 # The granularity pair opts out of that: it is pinned to eight threads and to
 # workloads up to thirty seconds, because its ParallelFFT arm costs frames x
@@ -107,10 +127,10 @@ export APPTAINERENV_PREFIX="cluster"
 #   SCALING_DURATIONS="5 30 120"; MEM_DURATION=120; WEAK_BASE=10
 for v in \
     "BENCH_ARGS=7 2 1024 512" \
-    "SCALING_RANKS=1 2 4 8 16 24 32" \
-    "THREAD_LIST=1 2 4 8 16 24 32" \
+    "SCALING_RANKS=1 2 4 8 12 16 24" \
+    "THREAD_LIST=1 2 4 8 16 24 32 48" \
     "SCALING_DURATIONS=5 15 300" \
-    "MEM_DURATION=30" \
+    "MEM_DURATION=300" \
     "WEAK_BASE=5" \
     "AMSC_GRANULARITY_THREADS=8" \
     "AMSC_GRANULARITY_MAX_SECONDS=30"; do

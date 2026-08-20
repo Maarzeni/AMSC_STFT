@@ -186,7 +186,7 @@ def finish(fig, out: Path) -> None:
 
 
 def scaling_figure(series, baselines, title, params, xlabel, out,
-                   colors=None, ideal_factor=1, with_time=False,
+                   colors=None, ideal_factor=1, with_time=False, metric="speedup",
                    time_label="execution time [ms]"):
     """Speedup against an ideal line; optionally an execution-time panel above."""
     series = {k: v for k, v in series.items() if len(v) >= 2}
@@ -215,6 +215,13 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
             continue
         colour = (colors or {}).get(label, SLOT[i % len(SLOT)])
         sp = [base / pts[x] for x in xs]
+        if metric == "efficiency":
+            # Speedup divided by the workers it used. Near the origin every
+            # curve hugs the ideal line and they overlap into one stroke;
+            # dividing by the worker count flattens the ideal to a constant
+            # and lets the differences between workloads occupy the whole
+            # height of the plot instead of a sliver of it.
+            sp = [v / (x * ideal_factor) for v, x in zip(sp, xs)]
         all_x.update(xs)
         ax_s.plot(xs, sp, color=colour, marker="o", markeredgecolor="white",
                   markeredgewidth=1.2, label=label, zorder=3)
@@ -232,12 +239,20 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
         ax.set_xscale("log", base=2)
         ax.set_xticks(xs)
         ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_s.set_yscale("log", base=2)
-    ax_s.set_yticks(ideal)
-    ax_s.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_s.set_ylabel("speedup   $t_1 / t_p$")
+    if metric == "efficiency":
+        # Linear, and anchored at 1: efficiency lives in [0, 1] and a log axis
+        # would compress exactly the range the reader is looking at.
+        ax_s.set_ylim(0, 1.08)
+        ax_s.set_ylabel("parallel efficiency   $t_1 / (p \\, t_p)$")
+    else:
+        ax_s.set_yscale("log", base=2)
+        ax_s.set_yticks(ideal)
+        ax_s.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        ax_s.set_ylabel("speedup   $t_1 / t_p$")
     ax_s.set_xlabel(xlabel)
-    ax_s.legend(loc="upper left")
+    # Efficiency curves start high on the left and fall away, so the bottom-left
+    # is the free corner; speedup curves do the opposite.
+    ax_s.legend(loc="lower left" if metric == "efficiency" else "upper left")
 
     if ax_t is not None:
         ax_t.set_yscale("log")
@@ -301,7 +316,7 @@ def fig_fft(rows, machine, stat, out):
                    colors=ALGO_COLOR, with_time=True)
 
 
-def fig_stft(rows, machine, stat, out, mode):
+def fig_stft(rows, machine, stat, out, mode, metric="speedup"):
     """Figures 2-4: STFT speedup under one parallelism mode.
 
     `mode` selects which rows and which worker count define the curve:
@@ -362,7 +377,7 @@ def fig_stft(rows, machine, stat, out, mode):
                ("sample rate", f"{RATE / 1000:g} kHz")]
               + workload_params(set(data)) + extra)
     scaling_figure(series, bases, title, params, xlabel, out,
-                   ideal_factor=factor)
+                   ideal_factor=factor, metric=metric)
 
 
 def fig_memory(mem, machine, out):
@@ -618,6 +633,12 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("results/results_analysis/figures"))
     ap.add_argument("--machine", action="append", default=None)
     ap.add_argument("--stat", default="min", choices=["min", "median", "mean"])
+    ap.add_argument("--metric", default="speedup",
+                    choices=["speedup", "efficiency"],
+                    help="what the scaling figures plot. speedup is the usual "
+                         "curve against a diagonal ideal; efficiency divides it "
+                         "by the worker count, which pulls apart workload curves "
+                         "that overlap near the origin (default: speedup)")
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
                          "stft_hybrid, memory, weak, granularity")
@@ -644,11 +665,14 @@ def main() -> int:
         if "fft_algorithms" in wanted:
             fig_fft(timings, m, stat, args.out / f"{m}_1_fft_algorithms")
         if "stft_openmp" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_2_stft_openmp", "openmp")
+            fig_stft(timings, m, stat, args.out / f"{m}_2_stft_openmp",
+                     "openmp", args.metric)
         if "stft_mpi" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_3_stft_mpi", "mpi")
+            fig_stft(timings, m, stat, args.out / f"{m}_3_stft_mpi",
+                     "mpi", args.metric)
         if "stft_hybrid" in wanted:
-            fig_stft(timings, m, stat, args.out / f"{m}_4_stft_hybrid", "hybrid")
+            fig_stft(timings, m, stat, args.out / f"{m}_4_stft_hybrid",
+                     "hybrid", args.metric)
         if "memory" in wanted:
             fig_memory(memory, m, args.out / f"{m}_5_memory")
         if "weak" in wanted:
