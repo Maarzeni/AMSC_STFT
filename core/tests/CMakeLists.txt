@@ -40,10 +40,10 @@ add_executable(test_IterativeFFT test_IterativeFFT.cpp)
 target_link_libraries(test_IterativeFFT PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME IterativeFFTTest COMMAND test_IterativeFFT)
 
-# --- Direct DFT reference validation (FFT vs naive O(N^2) DFT on small sizes) ---
-add_executable(test_DFTReference test_DFTReference.cpp)
-target_link_libraries(test_DFTReference PRIVATE amsc_stft_core GTest::gtest_main)
-add_test(NAME DFTReferenceTest COMMAND test_DFTReference)
+# --- FFT vs direct (naive O(N^2)) DFT validation, on small random signals ---
+add_executable(test_FFTVsDirectDFT test_FFTVsDirectDFT.cpp)
+target_link_libraries(test_FFTVsDirectDFT PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME FFTVsDirectDFTTest COMMAND test_FFTVsDirectDFT)
 
 # --- Parallel FFT Test ---
 add_executable(test_ParallelFFT test_ParallelFFT.cpp)
