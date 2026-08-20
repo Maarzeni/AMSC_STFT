@@ -74,6 +74,12 @@ export SINGULARITYENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export SINGULARITYENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export SINGULARITYENV_PREFIX="cluster"
 
+# Passed straight through when set, so the pipeline can ask for tests only.
+if [ -n "${TESTS_ONLY:-}" ]; then
+    export SINGULARITYENV_TESTS_ONLY="${TESTS_ONLY}"
+    export APPTAINERENV_TESTS_ONLY="${TESTS_ONLY}"
+fi
+
 export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"

@@ -31,6 +31,12 @@
 #   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
 #   MEM_DURATION seconds of audio for the memory comparison.  default 30
 #
+#   TESTS_ONLY     set to 1 to run section 1 (ctest) and stop. The CI/CD
+#                  pipeline uses this: it exists to prove that the code builds,
+#                  passes its tests and deploys, and a pipeline that runs on
+#                  every push must not also spend half an hour measuring.
+#                  Benchmarks are launched by hand when numbers are wanted.
+#
 #   SCALING        set to 0 to skip the strong-scaling sweep.  default on
 #   MAX_WORKERS    largest rank count in the sweep. default: the SLURM
 #                  allocation, or the machine's physical cores
@@ -312,6 +318,16 @@ export OMP_NUM_THREADS=${TOTAL_CORES}
 ( cd "${CTEST_MIRROR}" && ctest --output-on-failure ) \
     2>&1 | tee "${TEST_RESULTS_DIR}/${PREFIX}_ctest.txt"
 note_status "${PIPESTATUS[0]}" "unit-tests"
+
+if [ "${TESTS_ONLY:-0}" = "1" ]; then
+    echo ""
+    echo "TESTS_ONLY=1 — benchmarks skipped, stopping after the unit tests."
+    if [ -n "${FAILED}" ]; then
+        echo "FAILED sections:${FAILED}"
+        exit 1
+    fi
+    exit 0
+fi
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
