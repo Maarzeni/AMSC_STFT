@@ -337,3 +337,5 @@ Running Galileo100 through the container means the timed binaries are exactly th
 ## Continuous Integration and Deployment
 
 A GitHub Actions pipeline (`.github/workflows/main.yaml`) runs on every push and pull request: it builds the project and runs the full test suite and benchmarks on the GitHub runner, then packages everything into a container and repeats the same run on the Galileo100 HPC cluster at CINECA. Results from both environments are kept as workflow artifacts.
+
+chore: cluster config
