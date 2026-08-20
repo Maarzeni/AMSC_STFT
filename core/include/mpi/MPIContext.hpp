@@ -55,12 +55,18 @@ public:
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
+    /// @return This process's rank in MPI_COMM_WORLD, in [0, size()).
     [[nodiscard]] int  rank()   const noexcept { return rank_; }
+
+    /// @return The number of ranks in MPI_COMM_WORLD.
     [[nodiscard]] int  size()   const noexcept { return size_; }
+
+    /// @return True if this process is the root rank.
     [[nodiscard]] bool isRoot() const noexcept { return rank_ == root; }
 
     /**
      * @brief Blocks until all ranks reach this call (MPI_Barrier).
+     * @throws std::runtime_error if MPI_Barrier fails.
      */
     void barrier() const;
 

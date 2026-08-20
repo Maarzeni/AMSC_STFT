@@ -39,6 +39,10 @@ struct SpectrogramData {
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
+    /**
+     * @brief Mutable access to the magnitude at (frame, bin).
+     * @throws std::out_of_range if `frame >= numFrames` or `bin >= numBins`.
+     */
     [[nodiscard]] double& at(std::size_t frame, std::size_t bin) {
         if (frame >= numFrames || bin >= numBins)
             throw std::out_of_range(
@@ -48,6 +52,10 @@ struct SpectrogramData {
         return magnitudes[frame * numBins + bin];
     }
 
+    /**
+     * @brief Read-only access to the magnitude at (frame, bin).
+     * @throws std::out_of_range if `frame >= numFrames` or `bin >= numBins`.
+     */
     [[nodiscard]] double at(std::size_t frame, std::size_t bin) const {
         if (frame >= numFrames || bin >= numBins)
             throw std::out_of_range(
@@ -57,16 +65,27 @@ struct SpectrogramData {
         return magnitudes[frame * numBins + bin];
     }
 
+    /// @return True for a default-constructed or otherwise empty spectrogram.
     [[nodiscard]] bool empty() const noexcept { return magnitudes.empty(); }
 
-    /// Frequency (Hz) for bin index b.  Requires sampleRate > 0 and frameSize > 0.
+    /**
+     * @brief Frequency (Hz) of bin `bin`, given this spectrogram's own
+     *        frameSize and sampleRate.
+     * @return 0.0 if frameSize or sampleRate is unset (zero), rather than
+     *         dividing by zero.
+     */
     [[nodiscard]] double binFrequency(std::size_t bin) const noexcept {
         if (frameSize == 0 || sampleRate == 0) return 0.0;
         return static_cast<double>(bin) * static_cast<double>(sampleRate)
                / static_cast<double>(frameSize);
     }
 
-    /// Time (seconds) at the start of frame f.  Requires sampleRate > 0.
+    /**
+     * @brief Time (seconds) at the start of frame `frame`, given this
+     *        spectrogram's own hopSize and sampleRate.
+     * @return 0.0 if hopSize or sampleRate is unset (zero), rather than
+     *         dividing by zero.
+     */
     [[nodiscard]] double frameTime(std::size_t frame) const noexcept {
         if (hopSize == 0 || sampleRate == 0) return 0.0;
         return static_cast<double>(frame) * static_cast<double>(hopSize)

@@ -70,6 +70,11 @@ add_executable(test_HannWindow test_HannWindow.cpp)
 target_link_libraries(test_HannWindow PRIVATE amsc_stft_core GTest::gtest_main)
 add_test(NAME HannWindowTest COMMAND test_HannWindow)
 
+# --- SpectrogramData Test ---
+add_executable(test_SpectrogramData test_SpectrogramData.cpp)
+target_link_libraries(test_SpectrogramData PRIVATE amsc_stft_core GTest::gtest_main)
+add_test(NAME SpectrogramDataTest COMMAND test_SpectrogramData)
+
 # --- STFTAnalyzer Test (serial, no MPI) ---
 add_executable(test_STFTAnalyzer test_STFTAnalyzer.cpp)
 target_link_libraries(test_STFTAnalyzer PRIVATE amsc_stft_core GTest::gtest_main)

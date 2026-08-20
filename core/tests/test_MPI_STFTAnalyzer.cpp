@@ -25,6 +25,7 @@
 #include "fft/IterativeFFT.hpp"
 #include "window/HannWindow.hpp"
 
+#include <array>
 #include <cmath>
 #include <numbers>
 #include <vector>
@@ -43,13 +44,10 @@ int main(int argc, char** argv) {
     if (!ctx.isRoot())
         ::testing::UnitTest::GetInstance()->listeners().Release(
             ::testing::UnitTest::GetInstance()->listeners().default_result_printer());
-    int result = RUN_ALL_TESTS();
-    return result;
+    return RUN_ALL_TESTS();
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Helpers
-// ══════════════════════════════════════════════════════════════════════════════
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 namespace {
 
@@ -61,8 +59,8 @@ std::vector<double> sineSignal(std::size_t N, double freq, double sampleRate) {
 }
 
 /// The two strategies every case is run under, and a label for the messages.
-constexpr Distribution kStrategies[] = { Distribution::Broadcast,
-                                         Distribution::Scatter };
+constexpr auto kStrategies = std::to_array({ Distribution::Broadcast,
+                                             Distribution::Scatter });
 
 const char* label(Distribution d) {
     return d == Distribution::Broadcast ? "Broadcast" : "Scatter";
@@ -109,9 +107,7 @@ void expectMatchesSerial(const std::vector<double>& signal,
 
 } // namespace
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Tests
-// ══════════════════════════════════════════════════════════════════════════════
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 TEST(MPISTFTConsistency, DCSignalMatchesSerial) {
     constexpr std::size_t   FRAME = 512;

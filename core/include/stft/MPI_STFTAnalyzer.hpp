@@ -150,7 +150,10 @@ public:
           dist_(dist)
     {}
 
+    /// @return How the input samples are moved to the ranks (see Distribution).
     [[nodiscard]] Distribution distribution() const noexcept { return dist_; }
+
+    /// @return Where the local engine spends its thread budget (see Parallelism).
     [[nodiscard]] Parallelism  parallelism()  const noexcept {
         return engine_.parallelism();
     }

@@ -20,8 +20,7 @@
  *                           place, each thread builds its own private Window,
  *                           FFT and work buffers, so no synchronisation is
  *                           needed.  Pair it with a serial engine such as
- *                           IterativeFFT.  This is the default and matches the
- *                           behaviour of every earlier release.
+ *                           IterativeFFT.  This is the default.
  *
  *   Parallelism::Transform  The frame loop is plain sequential and one engine
  *                           serves every frame; the parallelism, if any, comes
