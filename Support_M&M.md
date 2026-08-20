@@ -311,7 +311,6 @@ OMP_NUM_THREADS=1 ./tests/test_ParallelFFT_OpenMP
 ## TO DO
 
 - decidere quali dei numerosi test tenere/presentare/sistemare
-- analisi di stft+fft_parallel vs stft+fft_iterative
-- i python scrivono in cose a caso
 - sistemare tutti i commenti in doxygen e comandi in bash 
 - usiamo solo galileo e non il mox?
+- far vedere in un test che la dft fa schifo

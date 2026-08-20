@@ -1,27 +1,32 @@
 /**
  * @file mpi_main.cpp
- * @brief Distributed STFT demonstration — WAV in, PNG spectrogram out.
+ * @brief Distributed STFT demonstration: WAV in, PNG spectrogram out.
  *
  * @details
- * The frames are block-distributed over the MPI ranks, each rank transforms
- * its block with OpenMP inside, and the root rank gathers the full spectrogram
+ * The frames are block-distributed over the MPI ranks, each rank transforms its
+ * own block with OpenMP inside, and the root rank gathers the full spectrogram
  * and writes it out.  This is `main.cpp` with MPI_STFTAnalyzer in place of
- * STFTAnalyzer, and is kept deliberately parallel to it, line by line.
+ * STFTAnalyzer, kept parallel to it line by line so that the two can be read
+ * side by side.
  *
- * Usage:
- *   mpirun -np <P> ./mpi_main [audio.wav] [frameSize=1024] [hopSize=512] [window]
- *
+ * @par Usage
+ * @code
+ * mpirun -np <P> ./mpi_main [audio.wav] [frameSize=1024] [hopSize=512] [window]
+ * @endcode
  * Every argument is optional.  A bare file name is looked up in
- * core/examples/data/, and with no argument at all the bundled test_audio.wav
- * is analysed; if the file cannot be read, a synthetic signal is used instead.
+ * `core/examples/data/`, and with no argument at all the bundled
+ * `test_audio.wav` is analysed; if the file cannot be read, a synthetic signal
+ * is analysed instead.
  *
- * The spectrogram is written by the root rank to results/results_examples/ as
- *   <stem>_<window>_f<frameSize>_h<hopSize>_mpi<P>.png
+ * The spectrogram is written by the root rank to `results/results_examples/` as
+ * `<stem>_<window>_f<frameSize>_h<hopSize>_mpi<P>.png`.
  *
- * Examples:
- *   mpirun -np 4 ./mpi_main
- *   mpirun -np 4 ./mpi_main scale.wav 2048 1024 blackman
- *   OMP_NUM_THREADS=4 mpirun -np 2 ./mpi_main test_audio.wav
+ * @par Examples
+ * @code
+ * mpirun -np 4 ./mpi_main
+ * mpirun -np 4 ./mpi_main scale.wav 2048 1024 blackman
+ * OMP_NUM_THREADS=4 mpirun -np 2 ./mpi_main test_audio.wav
+ * @endcode
  */
 
 #include "mpi/MPIContext.hpp"
@@ -35,61 +40,124 @@
 #include "window/BlackmanWindow.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <numbers>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
-// Absolute paths baked in by CMake (see examples/CMakeLists.txt), so the
-// program finds its audio and writes its output whatever directory it is
-// launched from.  The fallbacks only matter for a hand-rolled build.
+/**
+ * @def EXAMPLES_DATA_DIR
+ * @brief Directory a bare input file name is resolved against.
+ *
+ * Injected as an absolute path by CMake (see examples/CMakeLists.txt) so the
+ * binary finds its input from any working directory.  The fallback below only
+ * applies to a hand-rolled build.
+ */
 #ifndef EXAMPLES_DATA_DIR
 #define EXAMPLES_DATA_DIR "../examples/data"
 #endif
+
+/**
+ * @def EXAMPLES_OUTPUT_DIR
+ * @brief Default directory for the PNG spectrogram, injected by CMake.
+ */
 #ifndef EXAMPLES_OUTPUT_DIR
 #define EXAMPLES_OUTPUT_DIR "results/results_examples"
 #endif
 
 using namespace stft;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+namespace {
 
-static void printUsage(const char* prog) {
+constexpr std::string_view kDataDir   = EXAMPLES_DATA_DIR;
+constexpr std::string_view kOutputDir = EXAMPLES_OUTPUT_DIR;
+
+/// Environment variable that overrides ::kOutputDir at run time.
+constexpr const char* kOutputDirEnv = "STFT_EXAMPLES_DIR";
+
+constexpr std::string_view kDefaultInput      = "test_audio.wav";
+constexpr std::string_view kDefaultWindow     = "hann";
+constexpr std::size_t      kDefaultFrameSize  = 1024;
+constexpr std::size_t      kDefaultHopSize    = 512;
+constexpr std::uint32_t    kFallbackSampleRate = 44100;
+
+/// Validated command-line settings for one analysis.
+struct Config {
+    std::string input;      ///< Path to the WAV file to analyse.
+    std::size_t frameSize;  ///< STFT frame size in samples; a power of two.
+    std::size_t hopSize;    ///< Hop between successive frames, in samples.
+    std::string window;     ///< Window name: "hann", "hamming" or "blackman".
+};
+
+/// Prints the command-line synopsis on std::cerr.
+void printUsage(std::string_view prog) {
     std::cerr
         << "Usage: mpirun -np <P> " << prog
         << " [audio.wav] [frameSize=1024] [hopSize=512]"
            " [window=hann|hamming|blackman]\n"
         << "\n"
         << "  audio.wav   mono WAV file; a bare name is looked up in\n"
-        << "              " << EXAMPLES_DATA_DIR << " (default: test_audio.wav)\n"
+        << "              " << kDataDir << " (default: " << kDefaultInput << ")\n"
         << "  frameSize   STFT frame size, must be a power of two (default 1024)\n"
         << "  hopSize     hop between frames in samples (default 512)\n"
         << "  window      windowing function: hann (default), hamming, blackman\n"
         << "\n"
-        << "The PNG spectrogram is written to " << EXAMPLES_OUTPUT_DIR << "\n"
-        << "(override with $STFT_EXAMPLES_DIR).\n";
+        << "The PNG spectrogram is written to " << kOutputDir << "\n"
+        << "(override with $" << kOutputDirEnv << ").\n";
 }
 
-static bool isPowerOfTwo(std::size_t n) {
-    return n >= 2 && (n & (n - 1)) == 0;
+/**
+ * @brief Parses a whole non-negative decimal integer.
+ * @param arg Text to parse; must be digits only, with no sign and no suffix.
+ * @return The parsed value, or std::nullopt if @p arg is not such an integer.
+ */
+[[nodiscard]] std::optional<std::size_t> parseSize(std::string_view arg) {
+    std::size_t value = 0;
+    const auto* const last = arg.data() + arg.size();
+    const auto [end, ec] = std::from_chars(arg.data(), last, value);
+    if (ec != std::errc{} || end != last) return std::nullopt;
+    return value;
 }
 
-/// A bare file name resolves against the bundled audio directory.
-static std::string resolveInput(const std::string& arg) {
-    if (arg.find('/') != std::string::npos) return arg;
-    return std::string(EXAMPLES_DATA_DIR) + "/" + arg;
+/// True if @p n is a power of two of at least 2, as the FFT requires.
+[[nodiscard]] bool isPowerOfTwo(std::size_t n) noexcept {
+    return n >= 2 && std::has_single_bit(n);
 }
 
-/// $STFT_EXAMPLES_DIR, else the path baked in by CMake, else ./results/
-/// results_examples — the last one for a read-only source tree (container).
-static std::filesystem::path outputDir() {
+/// True if @p name is one of the window functions this example can instantiate.
+[[nodiscard]] bool isKnownWindow(std::string_view name) noexcept {
+    return name == "hann" || name == "hamming" || name == "blackman";
+}
+
+/// Resolves a bare file name against ::kDataDir; leaves any path unchanged.
+[[nodiscard]] std::string resolveInput(std::string_view arg) {
+    const std::filesystem::path given(arg);
+    if (given.has_parent_path()) return given.string();
+    return (std::filesystem::path(kDataDir) / given).string();
+}
+
+/**
+ * @brief Locates the output directory and creates it if needed.
+ * @return $STFT_EXAMPLES_DIR, else ::kOutputDir, else `./results/results_examples`
+ *         — the last one covers a read-only source tree, as in a container.
+ */
+[[nodiscard]] std::filesystem::path outputDir() {
     namespace fs = std::filesystem;
-    const char* env = std::getenv("STFT_EXAMPLES_DIR");
-    fs::path dir = (env && *env) ? fs::path(env) : fs::path(EXAMPLES_OUTPUT_DIR);
+
+    fs::path dir{kOutputDir};
+    if (const char* env = std::getenv(kOutputDirEnv); env != nullptr && *env != '\0')
+        dir = fs::path(env);
 
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -100,8 +168,14 @@ static std::filesystem::path outputDir() {
     return dir;
 }
 
-/// Fallback signal when no WAV can be read: three partials an octave apart.
-static std::vector<double> syntheticSignal(std::size_t numSamples, std::uint32_t sampleRate) {
+/**
+ * @brief Fallback signal used when no WAV can be read.
+ * @param numSamples Length of the generated signal, in samples.
+ * @param sampleRate Sample rate the partials are generated at, in Hz.
+ * @return Three partials an octave apart (440, 880 and 1760 Hz).
+ */
+[[nodiscard]] std::vector<double> syntheticSignal(std::size_t numSamples,
+                                                  std::uint32_t sampleRate) {
     std::vector<double> sig(numSamples);
     const double fs = static_cast<double>(sampleRate);
     for (std::size_t n = 0; n < numSamples; ++n) {
@@ -113,26 +187,36 @@ static std::vector<double> syntheticSignal(std::size_t numSamples, std::uint32_t
     return sig;
 }
 
-// ── Per-window run() instantiates the correct template parameter ──────────────
-
+/**
+ * @brief Analyses @p signal across the ranks; root writes the PNG and reports.
+ *
+ * Collective: every rank must call it, and every rank returns.  Only the root
+ * rank holds the gathered spectrogram, so only the root writes and prints.
+ *
+ * @tparam Window Window function to instantiate MPI_STFTAnalyzer with.
+ * @param ctx        Live MPI environment.
+ * @param signal     Samples to analyse; non-empty on the root rank only.
+ * @param sampleRate Sample rate of @p signal, in Hz.
+ * @param cfg        Validated command-line settings, identical on every rank.
+ * @param stem       Output file name without directory or `.png` extension.
+ * @return 0 on success, 1 if @p signal is shorter than a single frame.
+ */
 template<typename Window>
-int run(const MPIContext&  ctx,
-        const std::vector<double>& signal,
-        std::uint32_t      sampleRate,
-        std::size_t        frameSize,
-        std::size_t        hopSize,
-        const std::string& window,
-        const std::string& stem)
+[[nodiscard]] int run(const MPIContext&  ctx,
+                      const std::vector<double>& signal,
+                      std::uint32_t      sampleRate,
+                      const Config&      cfg,
+                      const std::string& stem)
 {
     const double fs = static_cast<double>(sampleRate);
 
     const MPI_STFTAnalyzer<IterativeFFT, Window> analyzer(
-        ctx, frameSize, hopSize, sampleRate);
+        ctx, cfg.frameSize, cfg.hopSize, sampleRate);
 
     if (ctx.isRoot())
         std::cout << "Computing STFT: "
                   << STFTAnalyzer<IterativeFFT, Window>::numFrames(
-                         signal.size(), frameSize, hopSize)
+                         signal.size(), cfg.frameSize, cfg.hopSize)
                   << " frames over " << ctx.size() << " MPI ranks...\n";
 
     // analyze() is collective, so every rank reaches it and a signal too short
@@ -143,25 +227,22 @@ int run(const MPIContext&  ctx,
     const SpectrogramData spec = analyzer.analyze(signal);
     const auto t1 = std::chrono::steady_clock::now();
 
-    if (!ctx.isRoot()) return 0;     // only root holds the gathered spectrogram
+    if (!ctx.isRoot()) return 0;
 
     if (spec.empty()) {
         std::cerr << "Error: signal is shorter than one frame ("
-                  << frameSize << " samples).\n";
+                  << cfg.frameSize << " samples).\n";
         return 1;
     }
 
-    // Dominant frequency of the middle frame: the one number that shows the
-    // transform actually looked at the signal.
+    // Dominant bin of the middle frame: the one number in the report that shows
+    // the transform followed the signal.  Rows are contiguous in the flat
+    // magnitude buffer, so the frame can be viewed as a span without copying.
     const std::size_t mid = spec.numFrames / 2;
-    std::size_t peakBin = 0;
-    double      peakMag = 0.0;
-    for (std::size_t b = 0; b < spec.numBins; ++b) {
-        if (spec.at(mid, b) > peakMag) {
-            peakMag = spec.at(mid, b);
-            peakBin = b;
-        }
-    }
+    const std::span<const double> midFrame(
+        spec.magnitudes.data() + mid * spec.numBins, spec.numBins);
+    const std::size_t peakBin = static_cast<std::size_t>(
+        std::ranges::max_element(midFrame) - midFrame.begin());
 
     const std::filesystem::path png =
         outputDir() / (stem + "_mpi" + std::to_string(ctx.size()) + ".png");
@@ -171,11 +252,12 @@ int run(const MPIContext&  ctx,
               << "  Sample rate    : " << sampleRate << " Hz\n"
               << "  Signal length  : " << signal.size() << " samples ("
                                        << signal.size() / fs << " s)\n"
-              << "  Frame / hop    : " << frameSize << " / " << hopSize << " samples\n"
-              << "  Window         : " << window << "\n"
+              << "  Frame / hop    : " << cfg.frameSize << " / " << cfg.hopSize
+                                       << " samples\n"
+              << "  Window         : " << cfg.window << "\n"
               << "  Frames x bins  : " << spec.numFrames << " x " << spec.numBins << "\n"
-              << "  Time res.      : " << 1000.0 * frameSize / fs << " ms per frame\n"
-              << "  Freq. res.     : " << fs / frameSize << " Hz per bin\n"
+              << "  Time res.      : " << 1000.0 * cfg.frameSize / fs << " ms per frame\n"
+              << "  Freq. res.     : " << fs / cfg.frameSize << " Hz per bin\n"
               << "  Dominant freq. : " << spec.binFrequency(peakBin)
                                        << " Hz (middle frame)\n"
               << "  MPI ranks      : " << ctx.size() << "\n"
@@ -186,90 +268,102 @@ int run(const MPIContext&  ctx,
     return 0;
 }
 
-// ── main ──────────────────────────────────────────────────────────────────────
+} // namespace
 
 int main(int argc, char** argv) {
     MPIContext ctx(argc, argv);
 
-    // Every rank parses the same argv, so the frame layout needs no broadcast.
-    std::string wavPath   = resolveInput(argc >= 2 ? argv[1] : "test_audio.wav");
-    std::size_t frameSize = 1024;
-    std::size_t hopSize   = 512;
-    std::string window    = "hann";
+    // Every rank parses the same argv, so the frame layout needs no broadcast,
+    // and a bad argument stops every rank on the same check.  Only the root
+    // prints the diagnostic, to keep one message per run rather than P.
+    const std::span args(argv, static_cast<std::size_t>(argc));
 
-    if (argc >= 3) {
-        try { frameSize = static_cast<std::size_t>(std::stoul(argv[2])); }
-        catch (...) {
+    std::string input     {kDefaultInput};
+    std::string window    {kDefaultWindow};
+    std::size_t frameSize = kDefaultFrameSize;
+    std::size_t hopSize   = kDefaultHopSize;
+
+    if (args.size() >= 2) input = args[1];
+    if (args.size() >= 3) {
+        const std::optional<std::size_t> parsed = parseSize(args[2]);
+        if (!parsed) {
             if (ctx.isRoot()) {
-                std::cerr << "Error: invalid frameSize '" << argv[2] << "'.\n";
-                printUsage(argv[0]);
+                std::cerr << "Error: invalid frameSize '" << args[2] << "'.\n";
+                printUsage(args[0]);
             }
             return 1;
         }
+        frameSize = *parsed;
     }
-    if (argc >= 4) {
-        try { hopSize = static_cast<std::size_t>(std::stoul(argv[3])); }
-        catch (...) {
+    if (args.size() >= 4) {
+        const std::optional<std::size_t> parsed = parseSize(args[3]);
+        if (!parsed) {
             if (ctx.isRoot()) {
-                std::cerr << "Error: invalid hopSize '" << argv[3] << "'.\n";
-                printUsage(argv[0]);
+                std::cerr << "Error: invalid hopSize '" << args[3] << "'.\n";
+                printUsage(args[0]);
             }
             return 1;
         }
+        hopSize = *parsed;
     }
-    if (argc >= 5) {
-        window = argv[4];
-        std::transform(window.begin(), window.end(), window.begin(),
-                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    if (args.size() >= 5) {
+        window = args[4];
+        std::ranges::transform(window, window.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
     }
 
-    // Validate.  Every rank checks the same arguments and stops together.
     if (!isPowerOfTwo(frameSize)) {
         if (ctx.isRoot())
             std::cerr << "Error: frameSize must be a power of two >= 2 (got "
                       << frameSize << ").\n";
         return 1;
     }
-    if (hopSize < 1) {
+    if (hopSize == 0) {
         if (ctx.isRoot()) std::cerr << "Error: hopSize must be >= 1.\n";
         return 1;
     }
-    if (window != "hann" && window != "hamming" && window != "blackman") {
+    if (!isKnownWindow(window)) {
         if (ctx.isRoot())
             std::cerr << "Error: unknown window '" << window
                       << "'. Choose hann, hamming, or blackman.\n";
         return 1;
     }
 
+    const Config cfg{ .input     = resolveInput(input),
+                      .frameSize = frameSize,
+                      .hopSize   = hopSize,
+                      .window    = std::move(window) };
+
     // Only the root reads the WAV; MPI_STFTAnalyzer distributes it from there.
     // The other ranks pass an empty signal and receive their slice inside
     // analyze().
-    std::uint32_t sampleRate = 44100;
+    std::uint32_t sampleRate = kFallbackSampleRate;
     std::vector<double> signal;
-    std::string stem = std::filesystem::path(wavPath).stem().string();
+    std::string stem = std::filesystem::path(cfg.input).stem().string();
 
     if (ctx.isRoot()) {
         try {
-            auto wav   = WavReader::load(wavPath);
+            WavData wav = WavReader::load(cfg.input);
             signal     = std::move(wav.samples);
             sampleRate = wav.sampleRate;
-            std::cout << "Input: " << wavPath << "\n";
+            std::cout << "Input: " << cfg.input << "\n";
         } catch (const std::exception& e) {
-            std::cerr << "Note: cannot use '" << wavPath << "' (" << e.what()
+            std::cerr << "Note: cannot use '" << cfg.input << "' (" << e.what()
                       << ") — analysing a synthetic signal instead.\n";
-            sampleRate = 44100;
-            signal     = syntheticSignal(2 * sampleRate, sampleRate);
-            stem       = "synthetic";
+            signal = syntheticSignal(2 * std::size_t{kFallbackSampleRate},
+                                     kFallbackSampleRate);
+            stem   = "synthetic";
         }
     }
 
-    stem += "_" + window + "_f" + std::to_string(frameSize)
-                 + "_h" + std::to_string(hopSize);
+    stem += "_" + cfg.window + "_f" + std::to_string(cfg.frameSize)
+                + "_h" + std::to_string(cfg.hopSize);
 
     try {
-        if      (window == "hann")    return run<HannWindow>    (ctx, signal, sampleRate, frameSize, hopSize, window, stem);
-        else if (window == "hamming") return run<HammingWindow> (ctx, signal, sampleRate, frameSize, hopSize, window, stem);
-        else                          return run<BlackmanWindow>(ctx, signal, sampleRate, frameSize, hopSize, window, stem);
+        if (cfg.window == "hann")    return run<HannWindow>    (ctx, signal, sampleRate, cfg, stem);
+        if (cfg.window == "hamming") return run<HammingWindow> (ctx, signal, sampleRate, cfg, stem);
+        return                              run<BlackmanWindow>(ctx, signal, sampleRate, cfg, stem);
     } catch (const std::exception& e) {
         std::cerr << "[rank " << ctx.rank() << "] Error: " << e.what() << "\n";
         return 1;
