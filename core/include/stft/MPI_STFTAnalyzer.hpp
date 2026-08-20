@@ -36,8 +36,8 @@
  * ─── Hybrid MPI + OpenMP ────────────────────────────────────────────────────
  * By default STFTAnalyzer uses `#pragma omp parallel for` over its frame block,
  * so each MPI rank automatically uses all available cores.  Recommended usage:
- *   mpirun -np <nodes> --map-by node --bind-to none ./mpi_main
- *   OMP_NUM_THREADS=<cores_per_node> mpirun ...
+ *   mpirun -np `<nodes>` --map-by node --bind-to none ./mpi_main
+ *   OMP_NUM_THREADS=`<cores_per_node>` mpirun ...
  *
  * Passing Parallelism::Transform (plus a parallel engine, see the FFT factory
  * constructors below) moves the intra-rank threads inside each transform
@@ -86,6 +86,7 @@ enum class Distribution {
     Scatter     ///< MPI_Scatterv only the samples each rank's frames read
 };
 
+/// Distributed STFT using MPI process-level parallelism.
 template<typename FFT, typename Window>
     requires IsFFT<FFT> && WindowFunction<Window>
 class MPI_STFTAnalyzer {
@@ -358,6 +359,7 @@ private:
      * if the two ever disagreed on a block boundary.
      */
     struct Layout {
+        /// One rank's contiguous block of a signal or a frame range.
         struct Slice {
             std::size_t offset = 0;   ///< first sample of the block
             std::size_t count  = 0;   ///< samples in the block (0 if idle)

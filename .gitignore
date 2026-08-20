@@ -75,6 +75,10 @@ amsc_stft_job.*
 # checked in because reproducing them means building the project first.
 !docs/figures/*.png
 
+# ── Generated documentation ──────────────────────────────────────────────────
+# The Doxyfile is committed; the HTML it produces is regenerated on demand.
+docs/doxygen/
+
 # ── Containers ───────────────────────────────────────────────────────────────
 *.sif
 

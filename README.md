@@ -51,105 +51,22 @@ Two parameters control the analysis, and they do very different things.
 
 ---
 
-## Project Structure
+## Repository Layout
 
-```
-.github/
-└── workflows/
-    └── main.yaml              ← GitHub Actions CI pipeline
-
-system-deps.txt                ← apt packages for the C++/MPI toolchain
-Singularity.def                ← Container definition for HPC deployment
-
-scripts/                       ← Everything that RUNS the project
-├── run_suite.sh               ← The benchmark suite: one recipe, every machine
-├── job.sh                     ← SLURM submission (Galileo100), wraps run_suite.sh
-└── job_mox.pbs                ← PBS submission (MOX cluster), same suite
-
-analysis/                      ← Everything that READS the results
-├── parse_results.py           ← Tags raw CSV with machine/source, merges it
-│                                 (standard library only)
-├── plot_results.py            ← CSV → PNG figures for the report (matplotlib)
-└── requirements.txt           ← pip packages for the above (matplotlib)
-
-core/
-│
-├── CMakeLists.txt
-│
-├── include/
-│   ├── audio/
-│   │   ├── AudioFile.h            ← External dependency
-│   │   └── WavReader.hpp          ← Header-only WAV reader
-│   │
-│   ├── fft/
-│   │   ├── BaseFFT.hpp            ← CRTP base class (C++20 Concepts)
-│   │   ├── IterativeFFT.hpp
-│   │   ├── RecursiveFFT.hpp
-│   │   └── ParallelFFT.hpp
-│   │
-│   ├── window/
-│   │   ├── BaseWindow.hpp
-│   │   ├── HannWindow.hpp
-│   │   ├── HammingWindow.hpp
-│   │   └── BlackmanWindow.hpp
-│   │
-│   ├── mpi/
-│   │   └── MPIContext.hpp         ← RAII wrapper for MPI_Init / MPI_Finalize
-│   │
-│   ├── stft/
-│   │   ├── STFTAnalyzer.hpp       ← Shared-memory STFT (OpenMP)
-│   │   ├── MPI_STFTAnalyzer.hpp   ← Distributed STFT (MPI)
-│   │   └── SpectrogramData.hpp
-│   │
-│   └── output/
-│       └── ImageExporter.hpp
-│
-├── src/
-│   ├── audio/
-│   │   └── WavReader.cpp
-│   ├── fft/
-│   │   ├── IterativeFFT.cpp
-│   │   ├── RecursiveFFT.cpp
-│   │   └── ParallelFFT.cpp
-│   ├── mpi/
-│   │   └── MPIContext.cpp
-│   └── output/
-│       └── ImageExporter.cpp
-│
-├── tests/
-│   ├── CMakeLists.txt
-│   └── (test source files)       ← All fixtures are synthesised in memory,
-│                                    except the WAV test_WavReader reads from
-│                                    examples/data/
-│
-├── benchmarks/
-│   ├── CMakeLists.txt
-│   ├── benchmark_Suite.hpp
-│   ├── benchmark_Main.cpp
-│   └── benchmark_MPI_Main.cpp     ← Distributed benchmark entry point
-│
-└── examples/
-    ├── CMakeLists.txt
-    ├── main.cpp                   ← Shared-memory pipeline (OpenMP)
-    ├── mpi_main.cpp               ← The same pipeline, distributed (MPI)
-    └── data/                      ← The audio the examples analyse. Both files
-        ├── test_audio.wav            are versioned (the blanket *.wav rule in
-        └── scale.wav                 .gitignore is negated for them); the
-                                      first is also test_WavReader's fixture
-
-results/                           ← Everything a run writes. Not in git. Each
-│                                     subdirectory is named after what writes
-│                                     to it.
-├── results_benchmark/             ← run_suite.sh: one CSV per benchmark
-│                                     topic, plus the environment log
-├── results_test/                  ← run_suite.sh: the ctest log and ctest's
-│                                     own working copy (see run_suite.sh)
-├── results_analysis/              ← parse_results.py + plot_results.py
-│   ├── csv/                       ← parse_results.py output
-│   └── figures/                   ← plot_results.py output (PNG)
-└── results_examples/              ← the spectrograms the two examples in
-                                      core/examples/ write
-```
+- `core/` — the library. `include/` and `src/` mirror each other by topic
+  (`fft/`, `window/`, `stft/`, `mpi/`, `audio/`, `output/`); `tests/` is one
+  GoogleTest file per header; `benchmarks/` is the timing suite; `examples/`
+  holds the two demo pipelines and the WAV fixtures they analyse.
+- `scripts/` — runs the project: `run_suite.sh` is the one recipe every
+  environment uses, `job.sh` and `job_mox.pbs` submit it to SLURM and PBS.
+- `analysis/` — reads the results: `parse_results.py` tags and merges the raw
+  CSVs (standard library only), `plot_results.py` turns them into figures.
+- `results/` — everything a run writes. Not tracked in git; see
+  [Benchmarks](#benchmarks) for what lands where.
+- `docs/doxygen/` — generated API documentation (see below). Not tracked.
+- `system-deps.txt`, `Singularity.def` — the apt package list and the
+  container definition used for HPC deployment.
+- `.github/workflows/` — the CI pipeline.
 
 ## Getting Started
 
@@ -170,6 +87,8 @@ cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
 ```
 
 CMake checks the compiler version itself and stops with a readable message if it is too old for C++20, rather than failing deep inside a standard header. The first `cmake` also needs the network access noted in the table above: GoogleTest is not an apt package, it is fetched from GitHub the first time the project is configured.
+
+Optional: `doxygen` and, for its dependency graphs, Graphviz's `dot` — needed only for [the API documentation](#optional-the-api-documentation) below (`sudo apt install doxygen graphviz`).
 
 ### Build
 
@@ -205,6 +124,20 @@ python3 -m pip install -r analysis/requirements.txt   # matplotlib
 ```
 
 `analysis/parse_results.py` uses the standard library only and needs no installation.
+
+### Optional: the API documentation
+
+Generates `docs/doxygen/html/` from the Doxygen comments in `core/include/`
+and `core/src/`, with this README as its front page. Needs `doxygen`; `dot`
+(from Graphviz) is optional and adds include/dependency graphs if present.
+
+```bash
+doxygen Doxyfile
+python3 -m http.server 8000 --directory docs/doxygen/html
+```
+
+Then open <http://localhost:8000/>. The generated HTML is not tracked by git;
+only `Doxyfile` is.
 
 ---
 
@@ -250,22 +183,13 @@ cd core/build
 # No arguments: the bundled test_audio.wav, 1024-sample frames, 50 % overlap, Hann
 ./examples/main
 
-# A bare name is looked up in core/examples/data/
-./examples/main scale.wav
-
-# Finer frequency resolution and a different window
-./examples/main scale.wav 2048 512 hamming
-
-# The frame loop is parallelised with OpenMP
-OMP_NUM_THREADS=4 ./examples/main ../examples/data/test_audio.wav
-
-# Somewhere else entirely
-STFT_EXAMPLES_DIR=/tmp/spectrograms ./examples/main
+# A different file, geometry and window; the frame loop is OpenMP-parallel
+OMP_NUM_THREADS=4 ./examples/main scale.wav 2048 512 hamming
 ```
 
 ### `mpi_main` — distributed
 
-The same commands with `mpirun` in front. The frames are block-distributed over the ranks and the root rank gathers the full spectrogram, so it is the one that writes the PNG and prints the report.
+The same command line with `mpirun` in front. The frames are block-distributed over the ranks and the root rank gathers the full spectrogram, so it is the one that writes the PNG and prints the report.
 
 ```bash
 cd core/build
@@ -275,9 +199,6 @@ mpirun -np 4 ./examples/mpi_main test_audio.wav
 
 # Hybrid: MPI across processes, OpenMP inside each one
 OMP_NUM_THREADS=4 mpirun -np 2 ./examples/mpi_main test_audio.wav 2048 512 hamming
-
-# No input file: the bundled fixture again
-mpirun -np 4 ./examples/mpi_main
 ```
 
 Add `--oversubscribe` if you ask for more ranks than the machine has cores.
@@ -297,34 +218,20 @@ ctest -N                     # list the tests without running them
 
 ### Running a single test
 
-`-R` selects the tests whose name contains what you pass it. `-V` prints the full GoogleTest output instead of showing it only on failure.
+`-R` selects the tests whose name contains what you pass it; each test is also
+a standalone executable under `tests/`, which gives access to the GoogleTest
+flags directly (`--gtest_list_tests`, `--gtest_filter=...`).
 
 ```bash
 ctest -R STFTAnalyzerTest --output-on-failure
-ctest -R MPISTFTTest --output-on-failure     # all four rank counts
-```
-
-Each test is also a standalone executable under `tests/`, which gives access to the GoogleTest flags:
-
-```bash
-./tests/test_STFTAnalyzer --gtest_list_tests
 ./tests/test_STFTAnalyzer --gtest_filter='STFTAnalyzerTemplateTest.*'
 ```
-
-The CTest names (`STFTAnalyzerTest`) and the GoogleTest suite names inside the sources (`NumFramesTest`, `SpectrogramDataTest`, …) are independent: the first go with `ctest -R`, the second with `--gtest_filter`.
 
 ### Running tests in parallel
 
 ```bash
-# Several test cases at once
-ctest -j4 --output-on-failure
-
-# More cores to one test (ParallelFFTTest and STFTAnalyzerTest use OpenMP)
-OMP_NUM_THREADS=4 ctest -R STFTAnalyzerTest --output-on-failure
-OMP_NUM_THREADS=4 ./tests/test_STFTAnalyzer
-
-# A rank count other than the registered 1, 2, 3 and 4
-mpirun -n 6 --oversubscribe ./tests/test_MPI_STFTAnalyzer
+ctest -j4 --output-on-failure                          # several tests at once
+OMP_NUM_THREADS=4 ctest -R STFTAnalyzerTest --output-on-failure  # more cores to one
 ```
 
 Keep `-j` times `OMP_NUM_THREADS` within the available cores: `ctest -j4` with `OMP_NUM_THREADS=4` asks for sixteen threads and will slow a four-core machine down rather than speed it up.
@@ -354,17 +261,8 @@ By default the STFT comparisons are measured on 1, 5, 10 and 30 seconds of audio
 ```bash
 cd core/build
 
-# Defaults
-./benchmarks/benchmark_Main
-
-# 10 repetitions, 3 warm-up iterations
-./benchmarks/benchmark_Main 10 3
-
-# 8192-sample frames, half overlap, 20 seconds of audio
-./benchmarks/benchmark_Main 7 2 8192 4096 20
-
-# The thread count for the parallel rows
-OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main
+OMP_NUM_THREADS=8 ./benchmarks/benchmark_Main                  # defaults
+./benchmarks/benchmark_Main 7 2 8192 4096 20                    # coarser frames, 20 s
 ```
 
 ### MPI / hybrid benchmarks
@@ -378,17 +276,9 @@ Each run reports three configurations of the same workload — a serial baseline
 ```bash
 cd core/build
 
-# Pure MPI: 1 OpenMP thread per rank
-mpirun -np 4 ./benchmarks/benchmark_MPI_Main
-
-# Hybrid MPI + OpenMP: multiple threads per rank
-OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main
-
-# Single-rank baseline
-mpirun -np 1 ./benchmarks/benchmark_MPI_Main
-
-# 30 seconds of audio on two ranks, broadcast instead of scatter
-mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 bcast
+mpirun -np 4 ./benchmarks/benchmark_MPI_Main                          # pure MPI
+OMP_NUM_THREADS=4 mpirun -np 2 ./benchmarks/benchmark_MPI_Main        # hybrid
+mpirun -np 2 ./benchmarks/benchmark_MPI_Main 7 2 1024 512 30 bcast    # broadcast, not scatter
 ```
 
 Vary `-np` across runs to read the strong-scaling behaviour. The memory figure is a whole-process high-water mark, so the two distribution strategies have to be compared across two separate runs.
@@ -398,12 +288,8 @@ Vary `-np` across runs to read the strong-scaling behaviour. The memory figure i
 `scripts/run_suite.sh` is the single entry point that produces every result file: the test run, both benchmark executables, the memory comparison, and the strong-, thread- and weak-scaling sweeps. The CI, the SLURM job and a person at a terminal all call it, so their numbers are comparable by construction. Run it from the repository root:
 
 ```bash
-# Against the build produced above
-bash scripts/run_suite.sh
-
-# A specific configuration
-RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
-SCALING_RANKS="1 2 4 8" SCALING_DURATIONS="5 30" bash scripts/run_suite.sh
+bash scripts/run_suite.sh                                    # against the build above
+RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh     # a specific configuration
 
 # On a cluster, against the Singularity image the CI builds from Singularity.def
 apptainer exec --bind "$PWD:$PWD" amsc_stft.sif bash scripts/run_suite.sh
@@ -441,7 +327,7 @@ The suite was run on two HPC systems, in both cases through the scripts in `scri
 
 | System | Submission | Configuration |
 |---|---|---|
-| **Galileo100** (CINECA) | `sbatch scripts/job.sh`, from the directory holding `amsc_stft.sif` | inside the Singularity image built by the CI, on the `g100_all_serial` partition |
+| **Galileo100** (CINECA) | `sbatch scripts/job.sh`, from the directory holding `amsc_stft.sif` | inside the Singularity image built by the CI, on the `g100_usr_prod` partition |
 | **MOX** (MOX laboratory, Politecnico di Milano) | `qsub scripts/job_mox.pbs`, from `/work/$USER/AMSC_STFT` | native build with `gcc@15.2.0` and `openmpi@5.0.8`, up to 28 cores on the `cpu` queue |
 
 Running Galileo100 through the container means the timed binaries are exactly the ones the pipeline ships, and the MOX job reuses the same `run_suite.sh` with a wider sweep, so the two machines produce directly comparable files. The measurements from both, and the discussion of what they show about the shared-memory, distributed and hybrid strategies, are in the project report included in this repository.

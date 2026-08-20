@@ -26,6 +26,7 @@
 
 namespace stft {
 
+/// RAII wrapper around the MPI process lifecycle.
 class MPIContext {
 public:
     static constexpr int root = 0;  ///< Rank of the root process

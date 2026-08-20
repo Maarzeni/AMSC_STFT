@@ -28,6 +28,7 @@
 
 namespace stft {
 
+/// Exports a SpectrogramData matrix as a PNG spectrogram image.
 class ImageExporter {
 public:
     /**

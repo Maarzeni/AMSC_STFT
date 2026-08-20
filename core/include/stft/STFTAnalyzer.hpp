@@ -94,10 +94,11 @@ namespace stft {
  * MPI_STFTAnalyzer.hpp.
  */
 enum class Parallelism {
-    Frames,     ///< #pragma omp parallel over the frames (default)
+    Frames,     ///< `#pragma omp parallel` over the frames (default)
     Transform   ///< sequential frames; parallelism comes from within the FFT
 };
 
+/// OpenMP-parallel Short-Time Fourier Transform engine.
 template<typename FFT, typename Window>
     requires IsFFT<FFT> && WindowFunction<Window>
 class STFTAnalyzer {

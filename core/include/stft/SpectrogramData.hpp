@@ -27,6 +27,7 @@
 
 namespace stft {
 
+/// The time-frequency magnitude matrix produced by the STFT (serial and MPI).
 struct SpectrogramData {
     std::size_t   numFrames  = 0;  ///< Number of time frames
     std::size_t   numBins    = 0;  ///< One-sided frequency bins: frameSize/2 + 1
