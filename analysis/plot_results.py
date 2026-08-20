@@ -89,6 +89,12 @@ def style() -> None:
 
 # ── Data ────────────────────────────────────────────────────────────────────
 def load(path: Path) -> list[dict]:
+    """Read one of parse_results.py's output CSVs into a list of row dicts.
+
+    Numeric columns are converted to int/float per the schema; blank fields
+    (a column that does not apply to this row's `kind`) become None rather
+    than an empty string, so later code can test for absence with `is None`.
+    """
     if not path.exists():
         return []
     rows = list(csv.DictReader(path.open()))
@@ -109,6 +115,7 @@ def seconds_of(frames: int) -> float:
 
 
 def workload_label(frames: int) -> str:
+    """Legend label for a workload, e.g. "5 s"."""
     return f"{seconds_of(frames):.0f} s"
 
 
@@ -171,6 +178,7 @@ def sort_key_factory(order):
 
 
 def finish(fig, out: Path) -> None:
+    """Save `fig` as `out`.png, close it, and confirm on stdout."""
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out.with_suffix(".png"))
     plt.close(fig)
@@ -253,6 +261,11 @@ def workload_params(frames_seen):
 
 
 def fig_fft(rows, machine, stat, out):
+    """Figure 1: the three FFT algorithms, time and speedup vs OpenMP threads.
+
+    Uses the largest transform size measured, since that is where threading
+    has the most work to hide its own overhead behind.
+    """
     per_algo: dict[str, dict[int, float]] = defaultdict(dict)
     sizes = {r["size"] for r in rows
              if r["machine"] == machine and r["section"] == "fft"
@@ -289,6 +302,13 @@ def fig_fft(rows, machine, stat, out):
 
 
 def fig_stft(rows, machine, stat, out, mode):
+    """Figures 2-4: STFT speedup under one parallelism mode.
+
+    `mode` selects which rows and which worker count define the curve:
+    "openmp" (OpenMP threads, single rank), "mpi" (MPI ranks, one thread
+    each), or "hybrid" (MPI ranks, two threads each — the ideal line is
+    2 x ranks, not ranks, to account for the fixed thread count).
+    """
     if mode == "openmp":
         section = "stft"
         keep = lambda r: r["variant"].startswith("STFT OpenMP")   # noqa: E731
