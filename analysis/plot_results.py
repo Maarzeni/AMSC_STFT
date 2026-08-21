@@ -62,6 +62,10 @@ STRATEGY_COLOR = {"broadcast": SLOT[0], "scatter": SLOT[1]}
 
 FRAME, HOP, RATE = 1024, 512, 44100
 
+# The sweep whose rows figure 5 reads (run_suite.sh writes one file per
+# section, and parse_results.py carries the name through as "source").
+MEMORY_SOURCE = "memory_bcast_vs_scatter"
+
 
 def style() -> None:
     """Sized for a projector, not for a screen at arm's length.
@@ -390,7 +394,13 @@ def fig_memory(mem, machine, out):
     """
     rss = defaultdict(dict)
     for r in mem:
-        if r["machine"] == machine and r["kind"] == "memory_rss" and r.get("ranks"):
+        # Only the dedicated bcast-vs-scatter sweep: three other sections of
+        # run_suite.sh also emit memory_rss scatter rows, and without this
+        # filter the last one read silently replaces the scatter series with a
+        # different experiment's — the two strategies then no longer agree even
+        # at one rank, where by construction they must.
+        if (r["machine"] == machine and r["kind"] == "memory_rss"
+                and r.get("source") == MEMORY_SOURCE and r.get("ranks")):
             rss[r["strategy"]][r["ranks"]] = r["avg_mib"]
     if not {"bcast", "scatter"} <= set(rss):
         print(f"  skip memory: need both strategies measured for {machine}")
