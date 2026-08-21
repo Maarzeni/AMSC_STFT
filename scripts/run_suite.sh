@@ -285,6 +285,18 @@ fi
 MAX_WORKERS=${MAX_WORKERS:-${AVAILABLE_CORES}}
 SCALING_RANKS=${SCALING_RANKS:-$(sweep_list "${MAX_WORKERS}")}
 
+# Threads for the SHARED-MEMORY sections (unit tests, section 2). Those run as a
+# single process on ONE node, so their thread count must be bounded by that
+# node, not by the whole allocation. On a multi-node job the two differ sharply:
+# 4 x 48 makes TOTAL_CORES 192 while the process still has 48 cores under it,
+# and 192 OpenMP threads on 48 cores is the oversubscription that drives
+# ParallelFFT into the pathological regime which once ran a job out of walltime.
+# SLURM_CPUS_ON_NODE is the allocation on THIS node; nproc is the fallback.
+NODE_CORES=${SLURM_CPUS_ON_NODE:-${LOGICAL_CPUS}}
+[ "${NODE_CORES}" -gt 0 ] 2>/dev/null || NODE_CORES=${LOGICAL_CPUS}
+SHARED_MEM_THREADS=${TOTAL_CORES}
+[ "${SHARED_MEM_THREADS}" -gt "${NODE_CORES}" ] && SHARED_MEM_THREADS=${NODE_CORES}
+
 export OMPI_MCA_rmaps_base_oversubscribe=1
 
 # mpirun still needs to be told explicitly when we knowingly ask for more
@@ -333,7 +345,7 @@ rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
 ( cd "${BUILD_DIR}" && find . -name CTestTestfile.cmake -exec cp --parents -t "${CTEST_MIRROR}" {} + )
 
-export OMP_NUM_THREADS=${TOTAL_CORES}
+export OMP_NUM_THREADS=${SHARED_MEM_THREADS}
 ( cd "${CTEST_MIRROR}" && ctest --output-on-failure ) \
     2>&1 | tee "${TEST_RESULTS_DIR}/${PREFIX}_ctest.txt"
 note_status "${PIPESTATUS[0]}" "unit-tests"
@@ -351,7 +363,7 @@ fi
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
 echo "============== [2/7] Benchmark: serial / OpenMP =========================="
-export OMP_NUM_THREADS=${TOTAL_CORES}
+export OMP_NUM_THREADS=${SHARED_MEM_THREADS}
 csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.csv" \
     "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS}
 note_status "${PIPESTATUS[0]}" "benchmark-openmp"

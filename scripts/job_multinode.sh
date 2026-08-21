@@ -2,7 +2,7 @@
 #SBATCH --job-name=AMSC_STFT_MN      ## Job name
 #SBATCH --output=amsc_mn_%j.out      ## Standard output file
 #SBATCH --error=amsc_mn_%j.err       ## Standard error file
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=48         ## 4 x 48 = 192 ranks, one per core
 #SBATCH --cpus-per-task=1
@@ -28,6 +28,13 @@
 ##  2. NO SHORT WORKLOADS. At 192 ranks, five seconds of audio leaves each rank
 ##     two frames; the measurement would be of MPI's startup, not of the STFT.
 ##     The workloads below keep at least ~130 frames per rank at full width.
+##
+## Walltime is one hour against roughly 21 minutes of measurement. Unlike the
+## single-node job there is no reason to ask for four: SLURM's backfill
+## scheduler slots a short job into gaps that a long one cannot fit, so on a
+## four-node exclusive request an honest estimate is what gets it started. Note
+## that holding more nodes does NOT shorten the run — 57% of it is the serial
+## baseline row, re-measured once per sweep block on a single rank by design.
 ##
 ## The A/B that isolates the network costs nothing extra: submit this same file
 ## twice with the same rank count on a different number of nodes, e.g.
