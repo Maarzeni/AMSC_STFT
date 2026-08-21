@@ -31,6 +31,12 @@
 #   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
 #   MEM_DURATION seconds of audio for the memory comparison.  default 30
 #
+#   MPI_LAUNCHER   how to start MPI ranks, up to and including the flag that
+#                  takes their number. Default "mpirun --bind-to none -np".
+#                  Multi-node runs under SLURM want "srun --mpi=pmix -n"
+#                  instead: the batch scheduler, not mpirun, is what knows how
+#                  to place ranks on nodes other than this one.
+#
 #   TESTS_ONLY     set to 1 to run section 1 (ctest) and stop. The CI/CD
 #                  pipeline uses this: it exists to prove that the code builds,
 #                  passes its tests and deploys, and a pipeline that runs on
@@ -88,11 +94,17 @@ container_hint() {
     echo "    apptainer build --fakeroot amsc_stft.sif Singularity.def" >&2
 }
 
+# Settled here rather than further down because the preflight below has to know
+# which launcher to look for: a multi-node run uses srun and may not need
+# mpirun on PATH at all.
+MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun --bind-to none -np}"
+LAUNCHER_CMD="${MPI_LAUNCHER%% *}"
+
 missing=""
 [ -x "${BUILD_DIR}/benchmarks/benchmark_Main" ]     || missing="${missing} benchmark_Main"
 [ -x "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ] || missing="${missing} benchmark_MPI_Main"
 command -v ctest  >/dev/null 2>&1                   || missing="${missing} ctest"
-command -v mpirun >/dev/null 2>&1                   || missing="${missing} mpirun"
+command -v "${LAUNCHER_CMD}" >/dev/null 2>&1        || missing="${missing} ${LAUNCHER_CMD}"
 
 if [ -n "${missing}" ]; then
     echo "ERROR: missing:${missing}" >&2
@@ -209,6 +221,13 @@ TOTAL_CORES=$(( RANKS * THREADS ))
 mkdir -p "${RESULTS_DIR}" "${TEST_RESULTS_DIR}"
 
 # ── MPI: make it survive both a container and an oversubscribed laptop ──────
+# The launcher is a variable because a container's own mpirun cannot reach
+# another node: only the batch scheduler can. Everything below that tunes
+# mpirun is therefore applied only when mpirun is what we are using.
+case "${MPI_LAUNCHER}" in
+    mpirun*) USING_MPIRUN=1 ;;
+    *)       USING_MPIRUN=0 ;;
+esac
 MPIRUN_EXTRA=""
 
 # OpenMPI needs a writable TMPDIR for its ORTE session directory. On the CINECA
@@ -222,7 +241,8 @@ if ! touch "${TMPDIR:-/tmp}/.amsc_write_test" 2>/dev/null; then
     # Only passed when the fallback was actually needed: the parameter is an
     # OpenMPI 4 name (OpenMPI 5 renamed ORTE to PRRTE), so handing it to a
     # newer mpirun for no reason invites a complaint we do not need.
-    MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca orte_tmpdir_base ${TMPDIR}"
+    [ "${USING_MPIRUN}" = "1" ] && \
+        MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca orte_tmpdir_base ${TMPDIR}"
 else
     rm -f "${TMPDIR:-/tmp}/.amsc_write_test"
 fi
@@ -231,7 +251,8 @@ fi
 # (process_vm_readv), which needs ptrace privileges the container lacks: every
 # large transfer then fails with "Read -1 ... errno = 1" and is retried on a
 # slower path, polluting the timings. Skipping single-copy avoids the detour.
-if [ -n "${APPTAINER_CONTAINER:-}${SINGULARITY_CONTAINER:-}" ]; then
+if [ -n "${APPTAINER_CONTAINER:-}${SINGULARITY_CONTAINER:-}" ] \
+        && [ "${USING_MPIRUN}" = "1" ]; then
     MPIRUN_EXTRA="${MPIRUN_EXTRA} --mca btl_vader_single_copy_mechanism none"
 fi
 
@@ -268,7 +289,7 @@ export OMPI_MCA_rmaps_base_oversubscribe=1
 
 # mpirun still needs to be told explicitly when we knowingly ask for more
 # workers than there are cores to put them on.
-if [ "${TOTAL_CORES}" -gt "${PHYSICAL_CORES}" ]; then
+if [ "${TOTAL_CORES}" -gt "${PHYSICAL_CORES}" ] && [ "${USING_MPIRUN}" = "1" ]; then
     MPIRUN_EXTRA="${MPIRUN_EXTRA} --oversubscribe"
 fi
 
@@ -340,7 +361,7 @@ echo ""
 echo "============ [3/7] Benchmark: MPI / hybrid ==============================="
 export OMP_NUM_THREADS=${THREADS}
 csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.csv" \
-    mpirun --bind-to none -np "${RANKS}" ${MPIRUN_EXTRA} \
+    ${MPI_LAUNCHER} "${RANKS}" ${MPIRUN_EXTRA} \
     "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS}
 note_status "${PIPESTATUS[0]}" "benchmark-mpi"
 
@@ -364,7 +385,7 @@ for P in ${MEM_RANKS}; do
         echo "  -np ${P} · distribution: ${STRATEGY}"
 
         csv_append "${MEMFILE}" \
-            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}"
         note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
@@ -413,7 +434,7 @@ if [ "${SCALING:-1}" != "0" ]; then
         # Fixed problem size across the sweep — that is what makes it STRONG
         # scaling — and the same repetitions and geometry as every other section.
         csv_append "${SCALEFILE}" \
-            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${DURATION}" scatter
         note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
@@ -494,7 +515,7 @@ if [ "${WEAK_SCALING:-1}" != "0" ]; then
         echo "  -np ${P} · ${DUR}s of audio (${WEAK_BASE}s per rank)"
 
         csv_append "${WEAKFILE}" \
-            mpirun --bind-to none -np "${P}" ${MPIRUN_EXTRA} --oversubscribe \
+            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${DUR}" scatter
         note_status "${PIPESTATUS[0]}" "weak-np${P}"
