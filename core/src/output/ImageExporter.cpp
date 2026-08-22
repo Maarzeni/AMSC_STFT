@@ -75,11 +75,6 @@ void writeBE32(std::vector<std::uint8_t>& buf, std::uint32_t v) {
     buf.push_back(static_cast<std::uint8_t>(v));
 }
 
-void writeBE16(std::vector<std::uint8_t>& buf, std::uint16_t v) {
-    buf.push_back(static_cast<std::uint8_t>(v >> 8));
-    buf.push_back(static_cast<std::uint8_t>(v));
-}
-
 /// DEFLATE's own LEN/NLEN fields are little-endian, unlike every other
 /// length field in the PNG/zlib formats this file writes.
 void writeLE16(std::vector<std::uint8_t>& buf, std::uint16_t v) {
