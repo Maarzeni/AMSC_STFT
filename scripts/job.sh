@@ -2,47 +2,28 @@
 #SBATCH --job-name=AMSC_STFT         ## Job name
 #SBATCH --output=amsc_stft_job.out   ## Standard output file
 #SBATCH --error=amsc_stft_job.err    ## Standard error file
-#SBATCH --time=04:00:00              ## Maximum job duration
-#SBATCH --nodes=1                    ## Single node (see MPI note below)
-#SBATCH --ntasks=24
-#SBATCH --cpus-per-task=2          ## 24 x 2 = 48 cores: the whole node
-#SBATCH --exclusive                ## nobody else on it while we measure
-#SBATCH --mem=0                    ## all of the node's memory
+#SBATCH --time=00:15:00              ## Small by design — see header note below
+#SBATCH --nodes=1
+#SBATCH --ntasks=2
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
 #SBATCH --partition=g100_usr_prod
-#SBATCH --account=tra26_TRNPLM     ## re-check the name with `saldo -b`
 
-## ── Resources ────────────────────────────────────────────────────────────────
-## Production partition on dedicated compute nodes, charged to tra26_TRNPLM.
-## g100_usr_prod requires an active account with unspent core-hours; if the
-## job is rejected with "invalid account or expired budget", check both with
-## `saldo -b`.
+## No --account here on purpose: this file is tracked in a public repository,
+## and a grant/account ID should not be. Supply yours at submission time —
+## `sbatch --account=<your_account> scripts/job.sh`, or `export
+## SBATCH_ACCOUNT=<your_account>` first — either overrides the missing
+## directive. The CI/CD pipeline does the same, from a GitHub Actions secret.
 ##
-## 24 ranks x 2 threads = 48 cores, which is the ENTIRE node: a g100 node has
-## 48 physical cores and no SMT, so this leaves nothing unused. The 24x2 shape
-## rather than 48x1 keeps the hybrid row meaningful — with one thread per rank
-## it would be identical to the MPI-pure row.
-##
-## --exclusive is what stops anyone else landing on the node mid-run. Without
-## it one sweep block came out at twice its own time (103 ms against 52), which
-## is a neighbour's job showing up inside our measurement.
-##
-## Four hours of walltime against roughly forty minutes of measurement: the
-## margin is deliberate, since a job killed at the limit loses every number it
-## had already taken.
-##
-## TOTAL_CORES and `mpirun -np` both read the SBATCH values above, and
-## run_suite.sh sizes its sweeps from the SLURM allocation, so nothing here
-## needs to be kept in sync by hand.
-
-# ── Notes ─────────────────────────────────────────────────────────────────────
-# * MPI runs INSIDE the container (single node) using the OpenMPI shipped in the
-#   image. This avoids host/container MPI ABI mismatches. For MULTI-node MPI you
-#   would instead launch with the host `mpirun`/`srun` + PMIx matching the image,
-#   which is significantly more fragile — keep it to one node here.
-# * The submission directory is bind-mounted into the container, so example
-#   programs can read the WAV files from the host and write their PNG output back
-#   to the host (they persist after the job ends).
-# ──────────────────────────────────────────────────────────────────────────────
+## This is deliberately the SMALL entry point: it exists so the CI/CD pipeline
+## has something to submit that proves the deployed container builds, passes
+## its tests and runs on Galileo100, in minutes, on a couple of cores. It runs
+## scripts/run_suite.sh exactly like every other environment does, so a green
+## run here is the same evidence a full run would give, just faster and
+## cheaper. For an actual measurement run — the whole node, the full sweep,
+## the WAV → spectrogram examples — see the local, untracked job_full.sh
+## (same shape as this file, sized for a real measurement instead of a
+## smoke test).
 
 # Move to the directory where the job was submitted
 cd "${SLURM_SUBMIT_DIR}"
@@ -63,18 +44,17 @@ TOTAL_CORES=$(( SLURM_NTASKS * SLURM_CPUS_PER_TASK ))
 
 # Container paths (binaries were compiled immutably inside the image)
 SIF="amsc_stft.sif"
-BUILD=/app/AMSC_STFT/core/build
 BIND="--bind ${SLURM_SUBMIT_DIR}:${SLURM_SUBMIT_DIR}"
 
-# ── Run the benchmark suite ───────────────────────────────────────────────────
+# ── Run the suite ──────────────────────────────────────────────────────────
 # Everything measured here lives in scripts/run_suite.sh, which the GitHub
-# workflow and any manual run call too: one recipe, so the three environments
-# stay comparable instead of drifting apart.
+# workflow, job_full.sh and any manual run call too: one recipe, so every
+# environment stays comparable instead of drifting apart.
 #
-# The script is executed INSIDE the container, where the binaries are. It works
-# out on its own that the login node's default TMPDIR is read-only, that
-# OpenMPI's Cross Memory Attach path is unavailable in a container, and how many
-# ranks/threads SLURM reserved.
+# The script is executed INSIDE the container, where the binaries are. It
+# works out on its own that the login node's default TMPDIR is read-only,
+# that OpenMPI's Cross Memory Attach path is unavailable in a container, and
+# how many ranks/threads SLURM reserved.
 RESULTS="${SLURM_SUBMIT_DIR}/results"
 mkdir -p "${RESULTS}"
 
@@ -92,92 +72,8 @@ export APPTAINERENV_RESULTS_DIR="${RESULTS}/results_benchmark"
 export APPTAINERENV_TEST_RESULTS_DIR="${RESULTS}/results_test"
 export APPTAINERENV_PREFIX="cluster"
 
-# ── Measurement configuration ────────────────────────────────────────────────
-# Kept in one place so the CI run and a manual `sbatch scripts/job.sh` measure
-# exactly the same thing.
-#
-# Three workloads spanning sixty-fold. The long one is the point: efficiency at
-# high worker counts is set by how much work each worker gets, and at 48 workers
-# five seconds of audio leaves each of them about nine frames — too few to say
-# anything about the implementation. Five minutes leaves five hundred.
-#
-# The rank sweep stops at 24, not 48, on purpose: its hybrid row runs
-# ranks x 2 threads, so 24 ranks already fill the node exactly. Going further
-# would measure oversubscription — 96 threads on 48 cores — which says nothing
-# about this code. The thread sweep has no such limit: one process with 48
-# threads is still one thread per core.
-#
-# MEM_DURATION is five minutes because the memory figure needs the signal to
-# dominate the footprint. At 30 s the per-rank RSS barely moves (27 MiB against
-# 21 from one rank to 32) since ~20 MiB of process overhead swamps a 1.7 MiB
-# signal; at 300 s it falls from 424 MiB to 37, which is the 1/P the scatter
-# is there to show.
-#
-# The granularity pair opts out of that: it is pinned to eight threads and to
-# workloads up to thirty seconds, because its ParallelFFT arm costs frames x
-# transform and ParallelFFT degrades once the threads outnumber the work inside
-# a 1024-point transform. Thirty-two threads over ten thousand frames is what
-# ran job 21842075 into its wall clock; the question it answers needs neither
-# the whole machine nor a long signal.
-#
-# Dense variant for the final run, once the results are settled (~3 h):
-#   BENCH_ARGS="15 3 1024 512"
-#   SCALING_RANKS="1 2 4 6 8 10 12 14 16 20 24 28 32"
-#   THREAD_LIST="1 2 4 6 8 10 12 14 16 20 24 32"
-#   SCALING_DURATIONS="5 30 120"; MEM_DURATION=120; WEAK_BASE=10
-for v in \
-    "BENCH_ARGS=7 2 1024 512" \
-    "SCALING_RANKS=1 2 4 8 12 16 24" \
-    "THREAD_LIST=1 2 4 8 16 24 32 48" \
-    "SCALING_DURATIONS=5 15 300" \
-    "MEM_DURATION=300" \
-    "WEAK_BASE=5" \
-    "AMSC_GRANULARITY_THREADS=8" \
-    "AMSC_GRANULARITY_MAX_SECONDS=30"; do
-    export "SINGULARITYENV_${v}"
-    export "APPTAINERENV_${v}"
-done
-
 singularity exec ${BIND} --pwd "${SLURM_SUBMIT_DIR}" ${SIF} \
     bash "${SLURM_SUBMIT_DIR}/scripts/run_suite.sh"
-
-# ── Examples: WAV → spectrogram PNG ───────────────────────────────────────────
-# Not part of the measured suite: these read a WAV from the HOST and write their
-# PNG back to the HOST, so they belong to the cluster deployment rather than to
-# the benchmarks. STFT_EXAMPLES_DIR is what sends the output to the submit
-# directory instead of the container's own read-only source tree.
-# They do need the same two MPI workarounds the suite applies internally — a
-# writable TMPDIR for the ORTE session directory, and no Cross Memory Attach
-# inside the container.
-echo ""
-echo "==================== Examples (STFT spectrograms) ========================"
-TMPWORK="${SLURM_SUBMIT_DIR}/tmp"
-mkdir -p "${TMPWORK}"
-export SINGULARITYENV_TMPDIR="${TMPWORK}" APPTAINERENV_TMPDIR="${TMPWORK}"
-unset DISPLAY XAUTHORITY
-MCA_OPTS="--mca orte_tmpdir_base ${TMPWORK} --mca btl_vader_single_copy_mechanism none"
-
-EXAMPLES_OUT="${RESULTS}/results_examples"
-mkdir -p "${EXAMPLES_OUT}"
-export SINGULARITYENV_STFT_EXAMPLES_DIR="${EXAMPLES_OUT}"
-export APPTAINERENV_STFT_EXAMPLES_DIR="${EXAMPLES_OUT}"
-
-WAV="${SLURM_SUBMIT_DIR}/core/examples/data/test_audio.wav"
-if [ -f "${WAV}" ]; then
-    # Shared-memory example: PNG into ${EXAMPLES_OUT}
-    export OMP_NUM_THREADS=${TOTAL_CORES}
-    singularity exec ${BIND} ${SIF} ${BUILD}/examples/main "${WAV}" 1024 512 hann
-
-    # Distributed example on the same WAV, same parameters, same destination
-    export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-    singularity exec ${BIND} ${SIF} \
-        mpirun --bind-to none -np ${SLURM_NTASKS} \
-        ${MCA_OPTS} \
-        ${BUILD}/examples/mpi_main "${WAV}" 1024 512 hann
-else
-    echo "WARNING: ${WAV} not found — skipping examples."
-    echo "         Upload core/examples/data/ alongside amsc_stft.sif to enable them."
-fi
 
 echo ""
 echo "Analysis completed!"

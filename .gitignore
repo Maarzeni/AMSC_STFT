@@ -57,6 +57,18 @@ ctest-run/
 *.err
 amsc_stft_job.*
 
+# ── Personal cluster submission scripts ─────────────────────────────────────
+# Tied to one person's HPC account (project code, home/work paths, access and
+# toolchain details for CINECA and MOX). Two files in scripts/ are meant to be
+# public: run_suite.sh (the actual benchmark recipe) and job.sh (the small,
+# account-free entry point the CI/CD pipeline submits). Everything else there
+# — job_full.sh and any cluster-specific helper — is a private script and
+# ignored by default, so a new one added later does not need to be remembered
+# here too.
+scripts/*
+!scripts/run_suite.sh
+!scripts/job.sh
+
 # ── Generated media ──────────────────────────────────────────────────────────
 # Spectrograms and the audio the examples and tests synthesise.
 *.ppm

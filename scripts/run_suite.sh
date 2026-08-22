@@ -52,6 +52,9 @@
 #   SCALING_THREADS  threads/rank for the hybrid row of the rank sweep. default 2
 #
 #   WEAK_SCALING   set to 0 to skip the weak-scaling sweep.   default on
+#   HYBRID_SPLIT   set to 0 to skip the rank/thread split sweep (section 8).
+#   HYBRID_SPLIT_THREADS      thread counts to try there. default "1 2 4 8 12 24 48"
+#   HYBRID_SPLIT_DURATION     seconds of audio for it. default: last SCALING_DURATIONS
 #   WEAK_BASE      seconds of audio PER RANK in that sweep.    default 5
 #
 #   THREAD_SCALING set to 0 to skip the OpenMP thread sweep.  default on
@@ -97,7 +100,13 @@ container_hint() {
 # Settled here rather than further down because the preflight below has to know
 # which launcher to look for: a multi-node run uses srun and may not need
 # mpirun on PATH at all.
-MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun --bind-to none -np}"
+# No binding policy here on purpose: one is chosen per launch by bind_flags()
+# below, which needs to know the rank and thread counts of that particular
+# launch to pick it. A policy baked in here would collide with that one —
+# OpenMPI rejects two conflicting --bind-to directives outright — so if you
+# override MPI_LAUNCHER and put a --bind-to of your own in it, bind_flags()
+# stands down and yours is used everywhere.
+MPI_LAUNCHER="${MPI_LAUNCHER:-mpirun -np}"
 LAUNCHER_CMD="${MPI_LAUNCHER%% *}"
 
 missing=""
@@ -297,11 +306,100 @@ NODE_CORES=${SLURM_CPUS_ON_NODE:-${LOGICAL_CPUS}}
 SHARED_MEM_THREADS=${TOTAL_CORES}
 [ "${SHARED_MEM_THREADS}" -gt "${NODE_CORES}" ] && SHARED_MEM_THREADS=${NODE_CORES}
 
+# ── Process binding ─────────────────────────────────────────────────────────
+# Until now every launch ran with --bind-to none, which lets the OS move ranks
+# and their OpenMP threads across cores freely. Two things follow on a machine
+# like a 2-socket compute node, and the second is the expensive one:
+#
+#   NUMA. Linux places a page on the memory of the socket that first touches
+#   it. A rank that migrates afterwards reads its own data across the socket
+#   interconnect for the rest of its life. The gather phase runs at memory
+#   bandwidth, so it pays this directly.
+#
+#   Collective jitter. With P unbound processes on P cores the scheduler
+#   occasionally stacks two on one core and idles another. For a single process
+#   that is noise that averages out. For a collective it does not: every rank
+#   waits for the slowest, so one descheduled rank stalls all the others, and
+#   the cost is paid once per collective rather than once per rank. This is the
+#   most likely source of the run-to-run spread seen at high rank counts —
+#   stddev around 40% of the mean, on an algorithm that is deterministic.
+#
+# Binding is therefore the default here, but only where it is safe:
+#
+#   - not when the caller supplied its own --bind-to (theirs wins);
+#   - not when mpirun is not the launcher (srun binds by its own rules);
+#   - not when the probe below says this mpirun does not understand PE=;
+#   - not when P x T exceeds the cores available, where binding would either be
+#     refused outright or pin several ranks onto one core. That case still runs
+#     unbound, exactly as before — the unit tests launch np=1..4 regardless of
+#     machine size and must keep working on a 2-core laptop.
+BIND_PROBE_OK=0
+case "${MPI_LAUNCHER}" in
+    *--bind-to*) BIND_USER_POLICY=1 ;;
+    *)           BIND_USER_POLICY=0 ;;
+esac
+
+if [ "${USING_MPIRUN}" = "1" ] && [ "${BIND_USER_POLICY}" = "0" ]; then
+    # PE= is the part worth probing: it is what maps T cores to one rank, and
+    # an mpirun that does not know it fails the whole launch rather than
+    # ignoring the flag. One np=1 launch of /bin/true settles it.
+    if mpirun --map-by slot:PE=1 --bind-to core ${MPIRUN_EXTRA}               -np 1 /bin/true >/dev/null 2>&1; then
+        BIND_PROBE_OK=1
+    else
+        echo "note: this mpirun rejected --map-by slot:PE=; running unbound"
+    fi
+fi
+
+# Binding flags for a launch of P ranks x T threads, or --bind-to none when
+# binding is not applicable. Always emits exactly one binding directive, so the
+# caller can append it unconditionally.
+bind_flags() {
+    _bf_p=$1
+    _bf_t=$2
+
+    # OpenMPI binds to PHYSICAL cores, and it refuses the whole launch — it does
+    # not fall back — when a mapping asks for more of them than a node has. So
+    # the check has to be per node and in physical cores, not in whatever
+    # AVAILABLE_CORES happens to count. On a machine with SMT the two differ by
+    # a factor of two, and getting this wrong would not degrade a sweep point,
+    # it would delete it.
+    _bf_nodes=${SLURM_JOB_NUM_NODES:-1}
+    _bf_per_node=$(( (_bf_p * _bf_t + _bf_nodes - 1) / _bf_nodes ))
+
+    if [ "${BIND_USER_POLICY}" = "1" ]; then
+        echo ""                                   # caller already said how
+    elif [ "${BIND_PROBE_OK}" != "1" ] \
+      || [ $(( _bf_p * _bf_t )) -gt "${AVAILABLE_CORES}" ] \
+      || [ "${_bf_per_node}" -gt "${PHYSICAL_CORES}" ]; then
+        echo "--bind-to none"
+    else
+        echo "--map-by slot:PE=${_bf_t} --bind-to core"
+    fi
+}
+
+# Largest T that keeps P x T inside the machine, capped at a requested maximum.
+# Used by the sweeps so that no point of a curve is oversubscribed: a point
+# measured on more workers than there are cores reports the scheduler's
+# behaviour, not the algorithm's, and it lands in the same CSV column as the
+# points that do not.
+fit_threads() {
+    _ft_p=$1
+    _ft_max=$2
+    _ft_t=$(( AVAILABLE_CORES / _ft_p ))
+    [ "${_ft_t}" -lt 1 ] && _ft_t=1
+    [ "${_ft_t}" -gt "${_ft_max}" ] && _ft_t=${_ft_max}
+    [ "${_ft_t}" -gt "${NODE_CORES}" ] && _ft_t=${NODE_CORES}
+    echo "${_ft_t}"
+}
+
 export OMPI_MCA_rmaps_base_oversubscribe=1
 
 # mpirun still needs to be told explicitly when we knowingly ask for more
 # workers than there are cores to put them on.
-if [ "${TOTAL_CORES}" -gt "${PHYSICAL_CORES}" ] && [ "${USING_MPIRUN}" = "1" ]; then
+# PHYSICAL_CORES describes ONE node, so on a multi-node allocation it is the
+# wrong yardstick: 192 ranks across four 48-core nodes is a perfect fit, not a
+# four-fold oversubscription. AVAILABLE_CORES is the allocation.
+if [ "${TOTAL_CORES}" -gt "${AVAILABLE_CORES}" ] && [ "${USING_MPIRUN}" = "1" ]; then
     MPIRUN_EXTRA="${MPIRUN_EXTRA} --oversubscribe"
 fi
 
@@ -339,7 +437,7 @@ unset DISPLAY XAUTHORITY
 # generated CTestTestfile.cmake files elsewhere sidesteps that: each one
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
-echo "==================== [1/7] Unit tests (ctest) ============================"
+echo "==================== [1/8] Unit tests (ctest) ============================"
 CTEST_MIRROR="${TEST_RESULTS_DIR}"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
@@ -362,30 +460,50 @@ fi
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
 echo ""
-echo "============== [2/7] Benchmark: serial / OpenMP =========================="
-export OMP_NUM_THREADS=${SHARED_MEM_THREADS}
-csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.csv" \
-    "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS}
-note_status "${PIPESTATUS[0]}" "benchmark-openmp"
+echo "============== [2/8] Benchmark: serial / OpenMP =========================="
+# Nothing in this section involves MPI: it is the FFT-engine comparison and the
+# shared-memory STFT, both of which are properties of one node. A distributed
+# run that already has good single-node numbers can set OPENMP_BENCH=0 and keep
+# them rather than pay to re-measure what will not have changed.
+if [ "${OPENMP_BENCH:-1}" != "0" ]; then
+    export OMP_NUM_THREADS=${SHARED_MEM_THREADS}
+    csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_openmp.csv" \
+        "${BUILD_DIR}/benchmarks/benchmark_Main" ${BENCH_ARGS}
+    note_status "${PIPESTATUS[0]}" "benchmark-openmp"
+else
+    echo "OPENMP_BENCH=0 — skipped (keeping the existing single-node numbers)."
+fi
 
 # ── Section 3: distributed / hybrid benchmark ───────────────────────────────
 echo ""
-echo "============ [3/7] Benchmark: MPI / hybrid ==============================="
-export OMP_NUM_THREADS=${THREADS}
+echo "============ [3/8] Benchmark: MPI / hybrid ==============================="
+# The binary reports both a 1-thread row and a THREADS-thread row from this one
+# launch, so the thread count has to leave room for the wider of the two.
+# The scaling sweeps below cover the same ground at every rank count; this
+# section is the single-configuration summary. MPI_BENCH=0 drops it.
+if [ "${MPI_BENCH:-1}" = "0" ]; then
+    echo "MPI_BENCH=0 — skipped (the scaling sweeps cover this ground)."
+else
+MPI_BENCH_THREADS=$(fit_threads "${RANKS}" "${THREADS}")
+[ "${MPI_BENCH_THREADS}" != "${THREADS}" ] && \
+    echo "  note: ${RANKS} x ${THREADS} exceeds ${AVAILABLE_CORES} cores;" \
+         "hybrid row measured at ${MPI_BENCH_THREADS} thr/rank"
+export OMP_NUM_THREADS=${MPI_BENCH_THREADS}
 csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.csv" \
     ${MPI_LAUNCHER} "${RANKS}" ${MPIRUN_EXTRA} \
+    $(bind_flags "${RANKS}" "${MPI_BENCH_THREADS}") \
     "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS}
 note_status "${PIPESTATUS[0]}" "benchmark-mpi"
+fi
 
 # ── Section 4: memory, broadcast vs scatter ─────────────────────────────────
 # VmHWM is a high-water mark of the whole process, so one process can only
 # report one strategy: running both in sequence would attribute the broadcast's
 # peak to the scatter too. Hence two launches, identical but for the strategy.
 echo ""
-echo "======== [4/7] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+echo "======== [4/8] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
 MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.csv"
 : > "${MEMFILE}"
-export OMP_NUM_THREADS=${THREADS}
 
 # Both strategies at every rank count of the sweep. Measuring the broadcast at a
 # single rank count would leave its curve as one point, and the whole claim —
@@ -393,11 +511,14 @@ export OMP_NUM_THREADS=${THREADS}
 # not — is a statement about how the two behave AS P GROWS.
 MEM_RANKS=${MEM_RANKS:-${SCALING_RANKS:-${RANKS}}}
 for P in ${MEM_RANKS}; do
+    MEM_THREADS=$(fit_threads "${P}" "${THREADS}")
+    export OMP_NUM_THREADS=${MEM_THREADS}
     for STRATEGY in bcast scatter; do
-        echo "  -np ${P} · distribution: ${STRATEGY}"
+        echo "  -np ${P} x ${MEM_THREADS} thr · distribution: ${STRATEGY}"
 
         csv_append "${MEMFILE}" \
             ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+            $(bind_flags "${P}" "${MEM_THREADS}") \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}"
         note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
@@ -428,25 +549,32 @@ if [ "${SCALING:-1}" != "0" ]; then
     SCALING_THREADS=${SCALING_THREADS:-2}
     export OMP_NUM_THREADS=${SCALING_THREADS}
 
-    # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the machine
-    # one step earlier than the pure row does ($MAX_WORKERS / SCALING_THREADS
-    # ranks). Past that point its numbers measure oversubscription rather than
-    # scaling — every CSV row still carries its own ranks/threads, though, so
-    # that boundary is a filter on the data, not something that has to be
-    # written down here for a reader to reconstruct later.
+    # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the
+    # machine one step earlier than the pure row does. That used to be left to
+    # the reader, on the grounds that every row carries its own ranks and
+    # threads; in practice it meant the top third of the sweep measured the
+    # scheduler rather than the algorithm, and it did so in the same column as
+    # the points that did not. SCALING_THREADS is now a CEILING: each P gets
+    # the largest thread count that still fits in the machine, which at the wide
+    # end is 1, where the hybrid row simply coincides with the pure one. Nothing
+    # is lost — a point that does not fit was never a measurement of scaling —
+    # and the CSV still records what each row actually ran with.
     echo ""
-    echo "======== [5/7] Strong scaling: ranks =${SCALING_RANKS} ==================="
+    echo "======== [5/8] Strong scaling: ranks =${SCALING_RANKS} ==================="
     SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.csv"
     : > "${SCALEFILE}"
 
     for DURATION in ${SCALING_DURATIONS}; do
     for P in ${SCALING_RANKS}; do
-        echo "  ${DURATION}s · -np ${P}"
+        T=$(fit_threads "${P}" "${SCALING_THREADS}")
+        export OMP_NUM_THREADS=${T}
+        echo "  ${DURATION}s · -np ${P} x ${T} thr"
 
         # Fixed problem size across the sweep — that is what makes it STRONG
         # scaling — and the same repetitions and geometry as every other section.
         csv_append "${SCALEFILE}" \
             ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+            $(bind_flags "${P}" "${T}") \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${DURATION}" scatter
         note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
@@ -481,7 +609,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
     fi
 
     echo ""
-    echo "======== [6/7] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
+    echo "======== [6/8] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
     THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.csv"
     : > "${THREADFILE}"
 
@@ -517,7 +645,7 @@ fi
 if [ "${WEAK_SCALING:-1}" != "0" ]; then
     WEAK_BASE=${WEAK_BASE:-5}          # seconds of audio per rank
     echo ""
-    echo "======== [7/7] Weak scaling: ${WEAK_BASE}s of audio per rank ============="
+    echo "======== [7/8] Weak scaling: ${WEAK_BASE}s of audio per rank ============="
     WEAKFILE="${RESULTS_DIR}/${PREFIX}_weak_scaling.csv"
     : > "${WEAKFILE}"
     export OMP_NUM_THREADS=1
@@ -528,9 +656,83 @@ if [ "${WEAK_SCALING:-1}" != "0" ]; then
 
         csv_append "${WEAKFILE}" \
             ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+            $(bind_flags "${P}" 1) \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${DUR}" scatter
         note_status "${PIPESTATUS[0]}" "weak-np${P}"
+    done
+fi
+
+# ── Section 8: how to split a fixed machine between ranks and threads ───────
+# Every other sweep varies the amount of hardware. This one holds it fixed at
+# AVAILABLE_CORES and varies only how it is DIVIDED: 192x1, 96x2, 48x4, ...,
+# 4x48. Same cores, same problem, same binary — the only thing that changes is
+# where the boundary between process parallelism and thread parallelism falls.
+#
+# It exists because "should several ranks share a node, or one rank per node
+# with OpenMP inside?" cannot be answered from the strong-scaling curve, where
+# ranks and cores move together and the two effects are confounded. Here they
+# are separated, and the answer is not obvious in either direction:
+#
+#   more ranks  — no shared mutable state, no OpenMP barrier, each rank's
+#                 output buffer first-touched by the one thread that fills it;
+#                 but one more message into root at every gather.
+#   more threads — fewer, larger messages into root; but one output buffer per
+#                 rank shared by T threads, and past a socket those threads are
+#                 writing across the NUMA interconnect.
+#
+# The expected optimum is therefore neither end but one rank per NUMA domain —
+# on a 2-socket node, 2 ranks x (cores/2) threads. Whether that is where it
+# actually lands is the point of measuring.
+#
+# Every point uses exactly AVAILABLE_CORES workers, so no point is
+# oversubscribed and the times are directly comparable: read the "hybrid" row of
+# each launch, which is the one that ran with T threads per rank.
+#
+# Compare those rows on min_ms, not on speedup. The workload is identical across
+# the splits, so the wall times are directly comparable — but each launch
+# re-measures its own single-rank serial baseline, at a different moment and on
+# a differently loaded machine, so the speedup column of this file is divided by
+# a slightly different number in every row. That is the right convention for the
+# scaling sweeps, where each point is its own experiment; here it adds noise to
+# the one comparison the file exists to make.
+# Below four cores there is no split to speak of, so the section stands down.
+if [ "${HYBRID_SPLIT:-1}" != "0" ] && [ "${AVAILABLE_CORES}" -ge 4 ]; then
+    # Thread counts worth trying: powers of two plus the divisors that land on
+    # a socket or a node. Filtered below to those that divide the machine.
+    HYBRID_SPLIT_THREADS=${HYBRID_SPLIT_THREADS:-"1 2 4 8 12 24 48"}
+    # One workload, big enough that the communication matters (a short one would
+    # compare startup costs) but not so big that the serial baseline each launch
+    # re-measures dominates the job. Defaults to the LAST entry of
+    # SCALING_DURATIONS; set HYBRID_SPLIT_DURATION to override.
+    if [ -z "${HYBRID_SPLIT_DURATION:-}" ]; then
+        for _hsd in ${SCALING_DURATIONS}; do HYBRID_SPLIT_DURATION=${_hsd}; done
+        HYBRID_SPLIT_DURATION=${HYBRID_SPLIT_DURATION:-60}
+    fi
+
+    echo ""
+    echo "======== [8/8] Rank/thread split at ${AVAILABLE_CORES} fixed cores ======="
+    SPLITFILE="${RESULTS_DIR}/${PREFIX}_hybrid_split.csv"
+    : > "${SPLITFILE}"
+
+    for T in ${HYBRID_SPLIT_THREADS}; do
+        # A rank cannot straddle nodes, so T is capped by one node's cores; and
+        # a split that does not divide the machine evenly would leave cores idle
+        # and make the point incomparable with the others.
+        [ "${T}" -le "${NODE_CORES}" ]              || continue
+        [ $(( AVAILABLE_CORES % T )) -eq 0 ]        || continue
+        P=$(( AVAILABLE_CORES / T ))
+        [ "${P}" -ge 1 ]                            || continue
+
+        export OMP_NUM_THREADS=${T}
+        echo "  -np ${P} x ${T} thr = ${AVAILABLE_CORES} workers · ${HYBRID_SPLIT_DURATION}s"
+
+        csv_append "${SPLITFILE}" \
+            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+            $(bind_flags "${P}" "${T}") \
+            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+            ${BENCH_ARGS} "${HYBRID_SPLIT_DURATION}" scatter
+        note_status "${PIPESTATUS[0]}" "split-${P}x${T}"
     done
 fi
 

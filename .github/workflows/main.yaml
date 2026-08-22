@@ -154,6 +154,7 @@ jobs:
           ssh $SSH_OPTS \
             ${{ secrets.HPC_USERNAME }}@login.g100.cineca.it \
             "cd ${{ secrets.HPC_SCRATCH_PATH }} && sbatch --wait \
+               --account=${{ secrets.HPC_ACCOUNT }} \
                --ntasks=2 --cpus-per-task=2 --mem=8G --time=00:10:00 \
                --export=ALL,TESTS_ONLY=1 scripts/job.sh"
 

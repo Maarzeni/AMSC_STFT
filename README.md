@@ -58,7 +58,10 @@ Two parameters control the analysis, and they do very different things.
   GoogleTest file per header; `benchmarks/` is the timing suite; `examples/`
   holds the two demo pipelines and the WAV fixtures they analyse.
 - `scripts/` — runs the project: `run_suite.sh` is the one recipe every
-  environment uses, `job.sh` and `job_mox.pbs` submit it to SLURM and PBS.
+  environment uses, and `job.sh` is the small SLURM entry point the CI/CD
+  pipeline submits (no account ID — see its header). The scripts that ran the
+  full measurement sweep on our own cluster accounts are local and not tracked
+  — see [Where we ran it](#where-we-ran-it).
 - `analysis/` — reads the results: `parse_results.py` tags and merges the raw
   CSVs (standard library only), `plot_results.py` turns them into figures.
 - `results/` — everything a run writes. Not tracked in git; see
@@ -323,19 +326,17 @@ python3 analysis/plot_results.py
 
 ### Where we ran it
 
-The suite was run on two HPC systems, in both cases through the scripts in `scripts/`:
+The suite was run on two HPC systems, each through a thin `sbatch`/`qsub` wrapper around `run_suite.sh`:
 
-| System | Submission | Configuration |
+| System | Scheduler | Configuration |
 |---|---|---|
-| **Galileo100** (CINECA) | `sbatch scripts/job.sh`, from the directory holding `amsc_stft.sif` | inside the Singularity image built by the CI, on the `g100_usr_prod` partition |
-| **MOX** (MOX laboratory, Politecnico di Milano) | `qsub scripts/job_mox.pbs`, from `/work/$USER/AMSC_STFT` | native build with `gcc@15.2.0` and `openmpi@5.0.8`, up to 28 cores on the `cpu` queue |
+| **Galileo100** (CINECA) | SLURM (`sbatch`) | inside the Singularity image built by the CI, on the `g100_usr_prod` partition |
+| **MOX** (MOX laboratory, Politecnico di Milano) | PBS (`qsub`) | native build with `gcc@15.2.0` and `openmpi@5.0.8`, up to 28 cores on the `cpu` queue |
 
-Running Galileo100 through the container means the timed binaries are exactly the ones the pipeline ships, and the MOX job reuses the same `run_suite.sh` with a wider sweep, so the two machines produce directly comparable files. The measurements from both, and the discussion of what they show about the shared-memory, distributed and hybrid strategies, are in the project report included in this repository.
+The full-sweep wrapper used for each is not tracked in this repository — it carries personal account and path details for that cluster — but does nothing beyond setting up the environment and calling `run_suite.sh`, which is. (`scripts/job.sh`, which *is* tracked, is a different, smaller thing: the account-free smoke test the CI/CD pipeline submits, not the run that produced these measurements.) Running Galileo100 through the container means the timed binaries are exactly the ones the pipeline ships, and the MOX job reuses the same `run_suite.sh` with a wider sweep, so the two machines produce directly comparable files. The measurements from both, and the discussion of what they show about the shared-memory, distributed and hybrid strategies, are in the project report included in this repository.
 
 ---
 
 ## Continuous Integration and Deployment
 
 A GitHub Actions pipeline (`.github/workflows/main.yaml`) runs on every push and pull request: it builds the project and runs the full test suite and benchmarks on the GitHub runner, then packages everything into a container and repeats the same run on the Galileo100 HPC cluster at CINECA. Results from both environments are kept as workflow artifacts.
-
-chore: cluster config
