@@ -16,6 +16,12 @@ Both read from and write to their default locations under results/; pass
   3  stft_mpi        STFT on MPI alone (1 thread per rank), speedup
   4  stft_hybrid     STFT with 2 threads per rank, speedup against rank count
   5  memory          broadcast vs scatter, mean per-rank footprint vs ranks
+     (6 retired — weak scaling is no longer measured)
+  7  granularity     shared-memory: threads across frames vs inside the FFT
+  8  granularity_mpi the same comparison, per MPI rank
+  9  hybrid_split    best rank/thread split at a fixed number of cores
+ 10  split_scaling   does that split keep scaling as nodes are added
+ 11  memory_hybrid   broadcast vs scatter, at the split figure 10 uses
 
 Each figure carries a parameter box to its right listing everything held fixed,
 so a figure lifted into a slide still says what it measured.
@@ -383,7 +389,7 @@ def fig_stft(rows, machine, stat, out, mode, metric="speedup"):
                    ideal_factor=factor, metric=metric)
 
 
-def fig_memory(mem, machine, out):
+def fig_memory(mem, machine, out, source=None, context=None):
     """Figure 5: what the input distribution costs each rank, two ways.
 
     Upper panel, the ANALYTIC input footprint: how many samples one rank has to
@@ -415,7 +421,7 @@ def fig_memory(mem, machine, out):
         # filter the last one read silently replaces the scatter series with a
         # different experiment's — the two strategies then no longer agree even
         # at one rank, where by construction they must.
-        if r["machine"] != machine or r.get("source") != MEMORY_SOURCE:
+        if r["machine"] != machine or r.get("source") != (source or MEMORY_SOURCE):
             continue
         if not r.get("ranks"):
             continue
@@ -461,6 +467,16 @@ def fig_memory(mem, machine, out):
                       linewidth=3.0, markersize=9,
                       label="broadcast" if strategy == "bcast" else "scatter")
         ax_a.set_yscale("log", base=10)
+        # Explicit ticks in plain MiB. Left to itself a log axis under one
+        # decade labels its minor ticks "6 x 10^1", which is a fact about the
+        # scale and not about the memory; and the lowest point sat on the frame.
+        lo_a = min(analytic["scatter"][p] for p in ranks) * 0.55
+        hi_a = max(analytic["bcast"][p] for p in ranks) * 1.6
+        cand = [0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+        ax_a.set_ylim(lo_a, hi_a)
+        ax_a.set_yticks([t for t in cand if lo_a < t < hi_a])
+        ax_a.set_yticklabels([f"{t:g}" for t in cand if lo_a < t < hi_a])
+        ax_a.minorticks_off()
         ax_a.set_ylabel("input held per rank [MiB]")
         ax_a.legend(loc="center left")
         ax_a.set_title("Input distribution: broadcast vs scatter",
@@ -496,8 +512,9 @@ def fig_memory(mem, machine, out):
     audio = ("/".join(f"{w:g}" for w in sorted(workloads)) if workloads
              else "unknown")
     param_box(fig, [("machine", machine),
-                    ("audio [s]", audio),
-                    ("", ""),
+                    ("audio [s]", audio)]
+                   + (context or [])
+                   + [("", ""),
                     ("upper", "exact arithmetic:"),
                     ("", "input samples"),
                     ("", "one rank holds"),
@@ -508,6 +525,138 @@ def fig_memory(mem, machine, out):
                     ("", "gathered output,"),
                     ("", "which no rank"),
                     ("", "count shrinks")])
+    finish(fig, out)
+
+
+# The CSV filename run_suite.sh writes for this sweep (see its own section 7),
+# not the figure's name below — the two are free to differ, and this is the
+# one place that has to know they mean the same data.
+HYBRID_SCALING_SOURCE = "hybrid_scaling"
+
+
+def fig_split_scaling(rows, mem, machine, stat, out, strategies=("scatter",)):
+    """Figure 10: does the chosen rank/thread split keep scaling as nodes are added?
+
+    Figure 9 asks which split is best at a fixed machine. This asks the other
+    half: hold the split — one rank per socket, 24 threads each — and add ranks,
+    so every step adds whole nodes. The ideal is a diagonal again, because here
+    the worker count really does grow.
+
+    Both distribution strategies are drawn, and the pair is the point. Broadcast
+    hands the whole signal to every rank however many there are, so the work it
+    adds cancels the work it distributes; scatter sends each rank only the
+    samples its own frames read. On memory that difference is a footprint; here
+    it is wall-clock time, and it is what decides whether more nodes help at all.
+
+    Recovering which launch was which needs a word: the timing rows carry no
+    strategy column — it belongs to the memory schema — but run_suite.sh runs one
+    launch per strategy in a fixed order and each launch emits its timings and
+    then its own memory_rss row. The two sequences therefore line up one for one,
+    which is how the labels below are assigned.
+    """
+    timings = [r for r in rows
+               if r["machine"] == machine
+               and r.get("source") == HYBRID_SCALING_SOURCE
+               and r.get("section") == "mpi"]
+    order = [r for r in mem
+             if r["machine"] == machine
+             and r.get("source") == HYBRID_SCALING_SOURCE
+             and r["kind"] == "memory_rss" and r.get("strategy")]
+    if not timings or not order:
+        print(f"  skip {out.name}: no hybrid-scaling rows for {machine}")
+        return
+
+    # Walk the timings in file order, closing a launch at each hybrid row, and
+    # take the strategies from the memory sequence in the same order.
+    launches, serial = [], None
+    for r in timings:
+        v = r.get("variant", "")
+        if v.startswith("serial") and r.get(stat):
+            serial = float(r[stat]) if serial is None else max(serial,
+                                                               float(r[stat]))
+        elif v.startswith("hybrid") and r.get(stat) and r.get("ranks"):
+            launches.append((int(r["ranks"]), int(r["threads"] or 0),
+                             float(r[stat])))
+    if not serial or len(launches) != len(order):
+        print(f"  skip {out.name}: {len(launches)} timings against "
+              f"{len(order)} memory rows — cannot pair them")
+        return
+
+    series = defaultdict(dict)
+    for (ranks, threads, ms), m in zip(launches, order):
+        name = "broadcast" if m["strategy"] == "bcast" else "scatter"
+        cores = ranks * threads
+        if cores not in series[name] or ms < series[name][cores][0]:
+            series[name][cores] = (ms, ranks)
+    if not series:
+        print(f"  skip {out.name}: no launches to draw")
+        return
+
+    cores = sorted({c for s in series.values() for c in s})
+    pos = list(range(len(cores)))
+    threads_per_rank = launches[0][1]
+
+    style()
+    fig, ax = plt.subplots(figsize=(11.0, 5.6))
+    fig.subplots_adjust(right=0.74)
+
+    ax.plot(pos, cores, color=REFERENCE, linestyle="--", linewidth=2.0,
+            label="ideal", zorder=1)
+    # "measured" rather than the distribution-strategy name ("scatter") when
+    # only one is drawn, which is the default: on a scaling figure the input
+    # distribution is not what the reader came for, and a lone line called
+    # "scatter" invites the question "scatter of what?". The strategy names
+    # only earn their place in the legend when both are drawn side by side and
+    # need telling apart.
+    for name in strategies:
+        if name not in series:
+            continue
+        xs = [i for i, c in enumerate(cores) if c in series[name]]
+        ys = [serial / series[name][cores[i]][0] for i in xs]
+        label = name if len(strategies) > 1 else "measured"
+        ax.plot(xs, ys, color=STRATEGY_COLOR[name], marker="o",
+                markeredgecolor="white", markeredgewidth=1.2,
+                linewidth=3.0, markersize=9, label=label, zorder=3)
+        for x, y in zip(xs, ys):
+            ax.annotate(f"{y:.0f}x", xy=(x, y), xytext=(0, 13),
+                        textcoords="offset points", ha="center",
+                        fontsize=11, color=INK, fontweight="medium")
+
+    ax.set_yscale("log", base=2)
+    drawn = [m for n in strategies if n in series
+             for m, _ in series[n].values()]
+    lo = min(serial / m for m in (drawn or [m for s in series.values()
+                                            for m, _ in s.values()])) * 0.72
+    hi = cores[-1] * 1.30
+    ax.set_ylim(lo, hi)
+    ticks = [t for t in (8, 16, 24, 32, 48, 64, 96, 128, cores[-1]) if lo < t < hi]
+    ax.set_yticks(ticks)
+    ax.set_yticklabels([f"{t:g}x" for t in ticks])
+    ax.minorticks_off()
+
+    ax.set_xticks(pos)
+    ax.set_xticklabels(
+        ["{}\n{} rank{}".format(c, n := series.get("scatter", series[
+            next(iter(series))])[c][1], "" if n == 1 else "s")
+         for c in cores])
+    ax.set_xlim(-0.35, len(cores) - 0.65)
+    ax.set_xlabel(f"cores  ({threads_per_rank} threads per rank throughout)")
+    ax.set_ylabel("speedup  $t_1/t_p$")
+    ax.set_title(f"STFT: rank / thread split, scaling at "
+                f"{threads_per_rank} threads per rank",
+                 loc="left", pad=14)
+    ax.legend(loc="upper left", framealpha=0.95)
+
+    param_box(fig, [("machine", machine), ("statistic", stat[:-3]),
+                    ("threads / rank", threads_per_rank),
+                    ("frame / hop", f"{FRAME} / {HOP}"),
+                    ("sample rate", f"{RATE / 1000:g} kHz"),
+                    ("", ""),
+                    ("note", "the split is held"),
+                    ("", "fixed and nodes"),
+                    ("", "are added, so the"),
+                    ("", "ideal is a"),
+                    ("", "diagonal again")])
     finish(fig, out)
 
 
@@ -587,24 +736,60 @@ def fig_hybrid_split(rows, machine, stat, out):
     ax.plot(pos, speedup, color=SLOT[0], marker="o", markeredgecolor="white",
             markeredgewidth=1.2, linewidth=3.0, markersize=9, zorder=3)
 
-    best = max(xs, key=lambda t: serial / pts[t][0])
-    ax.plot([pos[xs.index(best)]], [serial / pts[best][0]], marker="o",
-            markersize=15, markerfacecolor="none", markeredgecolor=SLOT[1],
+    # Every split within TIE of the fastest is circled, not just the fastest.
+    # Repeating this sweep moved the 24-thread point by 7% while the 48-thread
+    # one held to within 1%, which flipped the winner between two runs: the gap
+    # between the top splits is smaller than the variation between runs, so a
+    # single "best" marker would report a coin toss as a finding. What survives
+    # repetition is the group, and the distance from it down to fine-grained MPI.
+    # 8%: measured, not chosen. Repeating this whole sweep and comparing each
+    # configuration with itself gives a run-to-run difference of about 5% in
+    # the median and 7% at worst, so anything closer than that is not a result.
+    TIE = 1.08
+    fastest = min(pts[t][0] for t in xs)
+    tied = [t for t in xs if pts[t][0] <= fastest * TIE]
+    ax.plot([pos[xs.index(t)] for t in tied],
+            [serial / pts[t][0] for t in tied],
+            linestyle="none", marker="o", markersize=15,
+            markerfacecolor="none", markeredgecolor=SLOT[1],
             markeredgewidth=2.5, zorder=4,
-            label=f"best: {pts[best][1]} ranks x {best} thr")
+            label=("fastest" if len(tied) == 1
+                   else f"fastest {len(tied)}, within {(TIE - 1) * 100:.0f}%"))
 
     ax.set_yscale("log", base=2)
     ax.set_xticks(pos)
     ax.set_xticklabels(["{}\n{} ranks".format(t, pts[t][1]) for t in xs])
     ax.set_xlim(-0.4, len(xs) - 0.6)
-    # Headroom above the ideal line so the legend never sits on the data.
-    ax.set_ylim(min(speedup) * 0.75, workers * 2.2)
+    # Just enough headroom to clear the ideal line, not extra room to park the
+    # legend above it: that would push every measured point into the bottom of
+    # the frame and make a large speedup look like a flat line near the axis.
+    # The distance from the data UP to the ideal is the figure's content and
+    # deserves the space; an empty band above the ideal is not content.
+    lo, hi = min(speedup) * 0.80, workers * 1.30
+    ax.set_ylim(lo, hi)
+    # Plain speedups on the axis, not the powers of two a log scale labels by
+    # default: "2^5" is a fact about the scale, "32" is a fact about the code,
+    # and the reader came for the second. The ideal is always among them, so
+    # the line at the top is never an unlabelled stripe.
+    ticks = [t for t in (8, 16, 24, 32, 48, 64, 96, 128, workers) if lo < t < hi]
+    ax.set_yticks(ticks)
+    ax.set_yticklabels([f"{t:g}x" for t in ticks])
     ax.minorticks_off()
+
+    # The curve is read against an ideal an order of magnitude above it, so its
+    # own values are hard to recover from the axis: printing them next to the
+    # markers means the magnitude survives however the frame is scaled.
+    for x, y in zip(pos, speedup):
+        ax.annotate(f"{y:.0f}x", xy=(x, y), xytext=(0, 13),
+                    textcoords="offset points", ha="center",
+                    fontsize=11, color=INK, fontweight="medium")
     ax.set_xlabel("threads per rank")
     ax.set_ylabel("speedup  $t_1/t_p$")
     ax.set_title(f"STFT: rank / thread split at {workers} fixed cores",
                  loc="left", pad=14)
-    ax.legend(loc="upper left", framealpha=0.95)
+    # Between the curve and the ideal line, the one band of the frame
+    # that neither occupies.
+    ax.legend(loc="center left", framealpha=0.95)
 
     param_box(fig, [("machine", machine), ("statistic", stat[:-3]),
                     ("frame / hop", f"{FRAME} / {HOP}"),
@@ -735,6 +920,7 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
 
 
 def main() -> int:
+    """Parse the CLI flags, load the two CSVs, and write the requested figures."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", type=Path, default=Path("results/results_analysis/csv"))
@@ -749,13 +935,13 @@ def main() -> int:
                          "that overlap near the origin (default: speedup)")
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
-                         "stft_hybrid, memory, granularity, hybrid_split")
+                         "stft_hybrid, memory, granularity, hybrid_split, split_scaling")
     args = ap.parse_args()
 
     stat = f"{args.stat}_ms"
     wanted = ({w.strip() for w in args.only.split(",")} if args.only else
               {"fft_algorithms", "stft_openmp", "stft_mpi", "stft_hybrid",
-               "memory", "granularity", "hybrid_split"})
+               "memory", "granularity", "hybrid_split", "split_scaling"})
 
     timings = load(args.csv / "timings.csv")
     memory = load(args.csv / "memory.csv")
@@ -783,6 +969,14 @@ def main() -> int:
                      "hybrid", args.metric)
         if "memory" in wanted:
             fig_memory(memory, m, args.out / f"{m}_5_memory")
+        if "split_scaling" in wanted:
+            # Scatter only: broadcast belongs to figure 11, where the pair is
+            # the subject rather than a second line crossing the scaling story.
+            fig_split_scaling(timings, memory, m, stat,
+                              args.out / f"{m}_10_split_scaling")
+            fig_memory(memory, m, args.out / f"{m}_11_memory_hybrid",
+                       source=HYBRID_SCALING_SOURCE,
+                       context=[("threads / rank", 24)])
         if "hybrid_split" in wanted:
             fig_hybrid_split(timings, m, stat,
                              args.out / f"{m}_9_hybrid_split")

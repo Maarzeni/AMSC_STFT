@@ -17,6 +17,23 @@
 #
 #   Under SLURM: see job.sh, which is just an sbatch header around the line above.
 #
+# ─── How this maps to the report figures ────────────────────────────────────
+#
+# Each section below writes `<prefix>_<name>.csv`; analysis/parse_results.py
+# tags every row with that `<name>` as its "source", and analysis/plot_results.py
+# reads specific sources to build specific numbered figures. Section numbers
+# here and figure numbers there are two different countings — one CSV file can
+# feed more than one figure — so this table is the only place the two are tied
+# together; keep it in sync with plot_results.py's own `_SOURCE` constants and
+# `main()` if either side changes.
+#
+#   section 2 (serial/OpenMP)    -> figures 1 (fft), 7 (granularity)
+#   section 3 (thread scaling)   -> figure  2 (stft, OpenMP)
+#   section 4 (memory, paired)   -> figure  5 (memory)
+#   section 5 (strong scaling)   -> figures 3, 4 (stft, MPI / hybrid)
+#   section 6 (hybrid split)     -> figure  9 (hybrid_split)
+#   section 7 (hybrid scaling)   -> figures 10, 11 (hybrid_scaling, memory_hybrid)
+#
 # ─── Knobs (all optional, all environment variables) ────────────────────────
 #
 #   BUILD_DIR    where the compiled binaries live. Auto-detected: the in-image
@@ -29,7 +46,6 @@
 #   RANKS        MPI ranks.                default SLURM_NTASKS, else 2
 #   THREADS      OpenMP threads per rank.   default SLURM_CPUS_PER_TASK, else 2
 #   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
-#   MEM_DURATION seconds of audio for the memory comparison.  default 30
 #
 #   MPI_LAUNCHER   how to start MPI ranks, up to and including the flag that
 #                  takes their number. Default "mpirun --bind-to none -np".
@@ -43,7 +59,24 @@
 #                  every push must not also spend half an hour measuring.
 #                  Benchmarks are launched by hand when numbers are wanted.
 #
-#   SCALING        set to 0 to skip the strong-scaling sweep.  default on
+#   OPENMP_BENCH   set to 0 to skip section 2 (serial/OpenMP, single-node FFT
+#                  and STFT).  default on.  Useful when a distributed run
+#                  already has good single-node numbers from an earlier one.
+#   THREAD_SCALING set to 0 to skip section 3 (OpenMP thread sweep).  default on
+#   THREAD_LIST    explicit thread list, e.g. "1 2 4 8"; default: powers of two
+#                  up to the physical cores, plus one SMT point if there is one
+#
+#   MEMORY_BENCH   set to 0 to skip section 4 (broadcast vs scatter, MEASURED
+#                  peak RSS from paired runs).  default on.  The scaling
+#                  sweeps report an ANALYTIC estimate for both strategies at no
+#                  extra cost regardless of this setting — this section is the
+#                  only source of a REAL, measured number for broadcast outside
+#                  of section 7.
+#   MEM_RANKS      rank counts for that section, e.g. "1 2 4 8".
+#                  default SCALING_RANKS, else RANKS
+#   MEM_DURATION   seconds of audio for it.  default 30
+#
+#   SCALING        set to 0 to skip section 5, the strong-scaling sweep.  default on
 #   MAX_WORKERS    largest rank count in the sweep. default: the SLURM
 #                  allocation, or the machine's physical cores
 #   SCALING_RANKS  explicit rank list, e.g. "1 2 4 8", overriding MAX_WORKERS
@@ -51,15 +84,16 @@
 #                  default "5 15 60"; SCALING_DURATION (singular) forces one
 #   SCALING_THREADS  threads/rank for the hybrid row of the rank sweep. default 2
 #
-#   WEAK_SCALING   set to 0 to skip the weak-scaling sweep.   default on
-#   HYBRID_SPLIT   set to 0 to skip the rank/thread split sweep (section 8).
+#   HYBRID_SPLIT   set to 0 to skip section 6 (rank/thread split sweep).
 #   HYBRID_SPLIT_THREADS      thread counts to try there. default "1 2 4 8 12 24 48"
 #   HYBRID_SPLIT_DURATION     seconds of audio for it. default: last SCALING_DURATIONS
-#   WEAK_BASE      seconds of audio PER RANK in that sweep.    default 5
 #
-#   THREAD_SCALING set to 0 to skip the OpenMP thread sweep.  default on
-#   THREAD_LIST    explicit thread list, e.g. "1 2 4 8"; default: powers of two
-#                  up to the physical cores, plus one SMT point if there is one
+#   HYBRID_SCALING_THREADS   threads/rank for section 7, e.g. the split section 6
+#                  found best. Unset (the default) skips section 7 entirely — it
+#                  answers a question that only makes sense once section 6 has
+#                  already suggested a split worth scaling up.
+#   HYBRID_SCALING_RANKS     rank counts to sweep there. default "1 2 4 8"
+#   HYBRID_SCALING_DURATION  seconds of audio for it. default MEM_DURATION, else 300
 #
 #   e.g.  RANKS=4 THREADS=1 PREFIX=laptop bash scripts/run_suite.sh
 #         SCALING_RANKS="1 2 4 8 16" bash scripts/run_suite.sh
@@ -284,8 +318,8 @@ LOGICAL_CPUS=$(nproc)
 # Under a scheduler this is the ALLOCATION, not what lscpu reports: on a login
 # node lscpu sees every core of the machine while the job holds a handful, and
 # a sweep sized on the former would trample the other users. Computed once
-# here because both the memory comparison (section 4) and the scaling sweeps
-# (sections 5-7) need it.
+# here because several sections below need it: the memory comparison, the
+# scaling sweeps and both hybrid sections.
 if [ -n "${BATCH_CORES}" ] && [ "${BATCH_CORES}" -gt 0 ]; then
     AVAILABLE_CORES=${BATCH_CORES}
 else
@@ -366,14 +400,33 @@ bind_flags() {
     _bf_nodes=${SLURM_JOB_NUM_NODES:-1}
     _bf_per_node=$(( (_bf_p * _bf_t + _bf_nodes - 1) / _bf_nodes ))
 
+    # How many ranks a node can hold once each is given _bf_t cores of its own,
+    # and how many nodes that many ranks then need. Both are needed because
+    # `--map-by slot` is NOT told either: OpenMPI reads the slot count SLURM
+    # advertises — 48 per node, one per allocated task — and fills the first
+    # node with up to that many RANKS before moving on, without regard to the
+    # cores each rank was promised. With PE=2 and -np 48 it therefore puts all
+    # 48 on one node and then discovers it needs 96 cores there:
+    #     A request was made to bind to that would result in binding more
+    #     processes than cpus on a resource:  #processes: 2  #cpus: 1
+    # `ppr:N:node` states the per-node count instead of leaving it to be
+    # inferred, and still fills nodes in order — so 48 ranks of one thread are
+    # one node, 96 are two, and the node boundaries stay where the figures
+    # claim they are.
+    _bf_ppn=$(( PHYSICAL_CORES / _bf_t ))
+    [ "${_bf_ppn}" -lt 1 ]           && _bf_ppn=1
+    [ "${_bf_ppn}" -gt "${_bf_p}" ]  && _bf_ppn=${_bf_p}
+    _bf_nodes_needed=$(( (_bf_p + _bf_ppn - 1) / _bf_ppn ))
+
     if [ "${BIND_USER_POLICY}" = "1" ]; then
         echo ""                                   # caller already said how
     elif [ "${BIND_PROBE_OK}" != "1" ] \
       || [ $(( _bf_p * _bf_t )) -gt "${AVAILABLE_CORES}" ] \
-      || [ "${_bf_per_node}" -gt "${PHYSICAL_CORES}" ]; then
+      || [ "${_bf_t}" -gt "${PHYSICAL_CORES}" ] \
+      || [ "${_bf_nodes_needed}" -gt "${_bf_nodes}" ]; then
         echo "--bind-to none"
     else
-        echo "--map-by slot:PE=${_bf_t} --bind-to core"
+        echo "--map-by ppr:${_bf_ppn}:node:PE=${_bf_t} --bind-to core"
     fi
 }
 
@@ -437,7 +490,7 @@ unset DISPLAY XAUTHORITY
 # generated CTestTestfile.cmake files elsewhere sidesteps that: each one
 # registers its tests by ABSOLUTE path, so the very same binaries still run.
 echo ""
-echo "==================== [1/8] Unit tests (ctest) ============================"
+echo "==================== [1/7] Unit tests (ctest) ============================"
 CTEST_MIRROR="${TEST_RESULTS_DIR}"
 rm -rf "${CTEST_MIRROR}"
 mkdir -p "${CTEST_MIRROR}"
@@ -459,8 +512,10 @@ if [ "${TESTS_ONLY:-0}" = "1" ]; then
 fi
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
+# Feeds figure 1 (FFT engines) and figure 7 (granularity). Grouped next to
+# section 3 because both are single-node, no-MPI questions.
 echo ""
-echo "============== [2/8] Benchmark: serial / OpenMP =========================="
+echo "============== [2/7] Benchmark: serial / OpenMP =========================="
 # Nothing in this section involves MPI: it is the FFT-engine comparison and the
 # shared-memory STFT, both of which are properties of one node. A distributed
 # run that already has good single-node numbers can set OPENMP_BENCH=0 and keep
@@ -474,118 +529,11 @@ else
     echo "OPENMP_BENCH=0 — skipped (keeping the existing single-node numbers)."
 fi
 
-# ── Section 3: distributed / hybrid benchmark ───────────────────────────────
-echo ""
-echo "============ [3/8] Benchmark: MPI / hybrid ==============================="
-# The binary reports both a 1-thread row and a THREADS-thread row from this one
-# launch, so the thread count has to leave room for the wider of the two.
-# The scaling sweeps below cover the same ground at every rank count; this
-# section is the single-configuration summary. MPI_BENCH=0 drops it.
-if [ "${MPI_BENCH:-1}" = "0" ]; then
-    echo "MPI_BENCH=0 — skipped (the scaling sweeps cover this ground)."
-else
-MPI_BENCH_THREADS=$(fit_threads "${RANKS}" "${THREADS}")
-[ "${MPI_BENCH_THREADS}" != "${THREADS}" ] && \
-    echo "  note: ${RANKS} x ${THREADS} exceeds ${AVAILABLE_CORES} cores;" \
-         "hybrid row measured at ${MPI_BENCH_THREADS} thr/rank"
-export OMP_NUM_THREADS=${MPI_BENCH_THREADS}
-csv_append "${RESULTS_DIR}/${PREFIX}_benchmark_mpi.csv" \
-    ${MPI_LAUNCHER} "${RANKS}" ${MPIRUN_EXTRA} \
-    $(bind_flags "${RANKS}" "${MPI_BENCH_THREADS}") \
-    "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" ${BENCH_ARGS}
-note_status "${PIPESTATUS[0]}" "benchmark-mpi"
-fi
-
-# ── Section 4: memory, broadcast vs scatter ─────────────────────────────────
-# VmHWM is a high-water mark of the whole process, so one process can only
-# report one strategy: running both in sequence would attribute the broadcast's
-# peak to the scatter too. Hence two launches, identical but for the strategy.
-echo ""
-echo "======== [4/8] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
-MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.csv"
-: > "${MEMFILE}"
-
-# Both strategies at every rank count of the sweep. Measuring the broadcast at a
-# single rank count would leave its curve as one point, and the whole claim —
-# that the scatter's per-rank footprint falls as 1/P while the broadcast's does
-# not — is a statement about how the two behave AS P GROWS.
-MEM_RANKS=${MEM_RANKS:-${SCALING_RANKS:-${RANKS}}}
-for P in ${MEM_RANKS}; do
-    MEM_THREADS=$(fit_threads "${P}" "${THREADS}")
-    export OMP_NUM_THREADS=${MEM_THREADS}
-    for STRATEGY in bcast scatter; do
-        echo "  -np ${P} x ${MEM_THREADS} thr · distribution: ${STRATEGY}"
-
-        csv_append "${MEMFILE}" \
-            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
-            $(bind_flags "${P}" "${MEM_THREADS}") \
-            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}"
-        note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
-    done
-done
-
-# ── Section 5: strong scaling ───────────────────────────────────────────────
-# Sections 2-4 deliberately pin the same RANKS x THREADS everywhere, so tables
-# from different machines can be compared row by row. That is the wrong shape
-# for a scaling study, which needs the opposite: one machine, a fixed problem,
-# an increasing number of workers.
-#
-# The sweep therefore sizes itself to the machine — the SLURM allocation when
-# there is one, the physical core count otherwise — and walks the powers of two
-# up to it, adding the exact core count when that is not itself a power of two
-# (a 6-core machine gets 1 2 4 6). One thread per rank throughout, so the only
-# variable is the number of ranks.
-#
-# Reading it: speedup(P) = time(-np 1) / time(-np P). Every run also prints its
-# own "serial (1 rank, 1 thr)" row, which should stay roughly constant across
-# the sweep — if it drifts, the machine was busy and the run is suspect.
-if [ "${SCALING:-1}" != "0" ]; then
-    # Each run of the binary reports BOTH decompositions at the rank count it was
-    # given: "MPI pure" always uses one thread per rank, "hybrid" uses
-    # OMP_NUM_THREADS of them. Leaving that at 1 makes the two rows identical and
-    # hides OpenMP entirely, so the sweep runs with 2 threads per rank: at every
-    # P the file then shows P x 1 against P x 2, i.e. what the second thread buys.
-    SCALING_THREADS=${SCALING_THREADS:-2}
-    export OMP_NUM_THREADS=${SCALING_THREADS}
-
-    # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the
-    # machine one step earlier than the pure row does. That used to be left to
-    # the reader, on the grounds that every row carries its own ranks and
-    # threads; in practice it meant the top third of the sweep measured the
-    # scheduler rather than the algorithm, and it did so in the same column as
-    # the points that did not. SCALING_THREADS is now a CEILING: each P gets
-    # the largest thread count that still fits in the machine, which at the wide
-    # end is 1, where the hybrid row simply coincides with the pure one. Nothing
-    # is lost — a point that does not fit was never a measurement of scaling —
-    # and the CSV still records what each row actually ran with.
-    echo ""
-    echo "======== [5/8] Strong scaling: ranks =${SCALING_RANKS} ==================="
-    SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.csv"
-    : > "${SCALEFILE}"
-
-    for DURATION in ${SCALING_DURATIONS}; do
-    for P in ${SCALING_RANKS}; do
-        T=$(fit_threads "${P}" "${SCALING_THREADS}")
-        export OMP_NUM_THREADS=${T}
-        echo "  ${DURATION}s · -np ${P} x ${T} thr"
-
-        # Fixed problem size across the sweep — that is what makes it STRONG
-        # scaling — and the same repetitions and geometry as every other section.
-        csv_append "${SCALEFILE}" \
-            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
-            $(bind_flags "${P}" "${T}") \
-            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${DURATION}" scatter
-        note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
-    done
-    done
-fi
-
-# ── Section 6: OpenMP thread scaling (one process, no MPI) ──────────────────
-# The counterpart of section 5: there the ranks grew, here the threads do, and
-# MPI is out of the picture entirely. Section 2 only ever contrasts 1 thread
-# with all of them, which is two points — not a curve.
+# ── Section 3: OpenMP thread scaling (one process, no MPI) ──────────────────
+# Feeds figure 2 (STFT, OpenMP thread scaling). The counterpart of section 5:
+# there the ranks grow, here the threads do, and MPI is out of the picture
+# entirely. Section 2 only ever contrasts 1 thread with all of them, which is
+# two points — not a curve.
 #
 # benchmark_Main re-reads OMP_NUM_THREADS at startup and prints, in the same
 # table, its own single-thread baseline next to the threaded run. Every point of
@@ -609,7 +557,7 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
     fi
 
     echo ""
-    echo "======== [6/8] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
+    echo "======== [3/7] OpenMP thread scaling: threads =${THREAD_LIST} ==========="
     THREADFILE="${RESULTS_DIR}/${PREFIX}_scaling_threads.csv"
     : > "${THREADFILE}"
 
@@ -632,42 +580,106 @@ if [ "${THREAD_SCALING:-1}" != "0" ]; then
     done
 fi
 
-# ── Section 7: weak scaling ─────────────────────────────────────────────────
-# Strong scaling asks "does a FIXED problem finish sooner on more workers".
-# Weak scaling asks the complementary question — "can a PROPORTIONALLY larger
-# problem be solved in the same time" — by growing the audio with the rank
-# count, so the work per rank stays constant. A perfect implementation draws a
-# flat line; whatever slope appears is the communication and the serial part.
+# ── Section 4: memory, broadcast vs scatter ─────────────────────────────────
+# Feeds figure 5 (memory). VmHWM is a high-water mark of the whole process, so
+# one process can only report one strategy: running both in sequence would
+# attribute the broadcast's peak to the scatter too. Hence two launches,
+# identical but for the strategy.
 #
-# Both matter for a report: strong scaling is bounded by Amdahl, weak scaling by
-# Gustafson, and an implementation can look good under one and poor under the
-# other.
-if [ "${WEAK_SCALING:-1}" != "0" ]; then
-    WEAK_BASE=${WEAK_BASE:-5}          # seconds of audio per rank
-    echo ""
-    echo "======== [7/8] Weak scaling: ${WEAK_BASE}s of audio per rank ============="
-    WEAKFILE="${RESULTS_DIR}/${PREFIX}_weak_scaling.csv"
-    : > "${WEAKFILE}"
-    export OMP_NUM_THREADS=1
+# The only source of a MEASURED number for broadcast outside of section 7:
+# section 5 launches exclusively with scatter, and reports broadcast (if at
+# all) only as the analytic estimate computed alongside it. MEMORY_BENCH=0
+# drops this section when that estimate is enough.
+echo ""
+echo "======== [4/7] Memory: broadcast vs scatter (peak RSS, paired runs) ======"
+if [ "${MEMORY_BENCH:-1}" = "0" ]; then
+    echo "MEMORY_BENCH=0 — skipped (only the analytic estimate is available)."
+else
+MEMFILE="${RESULTS_DIR}/${PREFIX}_memory_bcast_vs_scatter.csv"
+: > "${MEMFILE}"
 
-    for P in ${SCALING_RANKS}; do
-        DUR=$(( WEAK_BASE * P ))
-        echo "  -np ${P} · ${DUR}s of audio (${WEAK_BASE}s per rank)"
+# Both strategies at every rank count of the sweep. Measuring the broadcast at a
+# single rank count would leave its curve as one point, and the whole claim —
+# that the scatter's per-rank footprint falls as 1/P while the broadcast's does
+# not — is a statement about how the two behave AS P GROWS.
+MEM_RANKS=${MEM_RANKS:-${SCALING_RANKS:-${RANKS}}}
+for P in ${MEM_RANKS}; do
+    MEM_THREADS=$(fit_threads "${P}" "${THREADS}")
+    export OMP_NUM_THREADS=${MEM_THREADS}
+    for STRATEGY in bcast scatter; do
+        echo "  -np ${P} x ${MEM_THREADS} thr · distribution: ${STRATEGY}"
 
-        csv_append "${WEAKFILE}" \
+        csv_append "${MEMFILE}" \
             ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
-            $(bind_flags "${P}" 1) \
+            $(bind_flags "${P}" "${MEM_THREADS}") \
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
-            ${BENCH_ARGS} "${DUR}" scatter
-        note_status "${PIPESTATUS[0]}" "weak-np${P}"
+            ${BENCH_ARGS} "${MEM_DURATION}" "${STRATEGY}"
+        note_status "${PIPESTATUS[0]}" "memory-np${P}-${STRATEGY}"
+    done
+done
+fi
+
+# ── Section 5: strong scaling ────────────────────────────────────────────────
+# Feeds figures 3 and 4 (STFT, MPI-only and hybrid rank scaling). Sections 2-4
+# deliberately pin the same RANKS x THREADS everywhere, so tables from
+# different machines can be compared row by row. That is the wrong shape for a
+# scaling study, which needs the opposite: one machine, a fixed problem, an
+# increasing number of workers.
+#
+# The sweep therefore sizes itself to the machine — the SLURM allocation when
+# there is one, the physical core count otherwise — and walks the powers of two
+# up to it, adding the exact core count when that is not itself a power of two
+# (a 6-core machine gets 1 2 4 6). One thread per rank throughout, so the only
+# variable is the number of ranks.
+#
+# Reading it: speedup(P) = time(-np 1) / time(-np P). Every run also prints its
+# own "serial (1 rank, 1 thr)" row, which should stay roughly constant across
+# the sweep — if it drifts, the machine was busy and the run is suspect.
+if [ "${SCALING:-1}" != "0" ]; then
+    # Each run of the binary reports BOTH decompositions at the rank count it was
+    # given: "MPI pure" always uses one thread per rank, "hybrid" uses
+    # OMP_NUM_THREADS of them. Leaving that at 1 makes the two rows identical and
+    # hides OpenMP entirely, so the sweep runs with 2 threads per rank: at every
+    # P the file then shows P x 1 against P x 2, i.e. what the second thread buys.
+    SCALING_THREADS=${SCALING_THREADS:-2}
+    export OMP_NUM_THREADS=${SCALING_THREADS}
+
+    # The hybrid row uses P x SCALING_THREADS workers, so it outgrows the
+    # machine one step earlier than the pure row does. SCALING_THREADS is a
+    # CEILING, not a fixed value: each P gets the largest thread count that
+    # still fits in the machine, which at the wide end is 1, where the hybrid
+    # row simply coincides with the pure one. A point that does not fit was
+    # never a measurement of scaling, and the CSV still records what each row
+    # actually ran with.
+    echo ""
+    echo "======== [5/7] Strong scaling: ranks =${SCALING_RANKS} ==================="
+    SCALEFILE="${RESULTS_DIR}/${PREFIX}_scaling.csv"
+    : > "${SCALEFILE}"
+
+    for DURATION in ${SCALING_DURATIONS}; do
+    for P in ${SCALING_RANKS}; do
+        T=$(fit_threads "${P}" "${SCALING_THREADS}")
+        export OMP_NUM_THREADS=${T}
+        echo "  ${DURATION}s · -np ${P} x ${T} thr"
+
+        # Fixed problem size across the sweep — that is what makes it STRONG
+        # scaling — and the same repetitions and geometry as every other section.
+        csv_append "${SCALEFILE}" \
+            ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+            $(bind_flags "${P}" "${T}") \
+            "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+            ${BENCH_ARGS} "${DURATION}" scatter
+        note_status "${PIPESTATUS[0]}" "scaling-np${P}-${DURATION}s"
+    done
     done
 fi
 
-# ── Section 8: how to split a fixed machine between ranks and threads ───────
-# Every other sweep varies the amount of hardware. This one holds it fixed at
-# AVAILABLE_CORES and varies only how it is DIVIDED: 192x1, 96x2, 48x4, ...,
-# 4x48. Same cores, same problem, same binary — the only thing that changes is
-# where the boundary between process parallelism and thread parallelism falls.
+# ── Section 6: how to split a fixed machine between ranks and threads ───────
+# Feeds figure 9 (hybrid_split). Every other sweep varies the amount of
+# hardware. This one holds it fixed at AVAILABLE_CORES and varies only how it
+# is DIVIDED: 192x1, 96x2, 48x4, ..., 4x48. Same cores, same problem, same
+# binary — the only thing that changes is where the boundary between process
+# parallelism and thread parallelism falls.
 #
 # It exists because "should several ranks share a node, or one rank per node
 # with OpenMP inside?" cannot be answered from the strong-scaling curve, where
@@ -683,7 +695,8 @@ fi
 #
 # The expected optimum is therefore neither end but one rank per NUMA domain —
 # on a 2-socket node, 2 ranks x (cores/2) threads. Whether that is where it
-# actually lands is the point of measuring.
+# actually lands is the point of measuring, and it is what section 7 goes on
+# to scale up.
 #
 # Every point uses exactly AVAILABLE_CORES workers, so no point is
 # oversubscribed and the times are directly comparable: read the "hybrid" row of
@@ -711,7 +724,7 @@ if [ "${HYBRID_SPLIT:-1}" != "0" ] && [ "${AVAILABLE_CORES}" -ge 4 ]; then
     fi
 
     echo ""
-    echo "======== [8/8] Rank/thread split at ${AVAILABLE_CORES} fixed cores ======="
+    echo "======== [6/7] Rank/thread split at ${AVAILABLE_CORES} fixed cores ======="
     SPLITFILE="${RESULTS_DIR}/${PREFIX}_hybrid_split.csv"
     : > "${SPLITFILE}"
 
@@ -733,6 +746,49 @@ if [ "${HYBRID_SPLIT:-1}" != "0" ] && [ "${AVAILABLE_CORES}" -ge 4 ]; then
             "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
             ${BENCH_ARGS} "${HYBRID_SPLIT_DURATION}" scatter
         note_status "${PIPESTATUS[0]}" "split-${P}x${T}"
+    done
+fi
+
+# ── Section 7: how the chosen split scales ───────────────────────────────────
+# Feeds figures 10 and 11 (hybrid_scaling, memory_hybrid). Section 6 asks which
+# split is best at a fixed machine; this asks how the split you picked behaves
+# as the machine grows. They are different questions and neither answers the
+# other: a decomposition can win at 192 cores and still stop scaling at 48, and
+# one that scales cleanly can be beaten at every size. Off by default — set
+# HYBRID_SCALING_THREADS to the split section 6 found best to turn it on.
+#
+# Threads per rank are held FIXED and ranks are added, so each step adds whole
+# nodes: at 24 threads a rank is one socket of this machine, so 1, 2, 4, 8 ranks
+# are 24, 48, 96 and 192 cores. Both distribution strategies are launched at
+# every point, which costs nothing extra to time and yields the memory pair for
+# the configuration actually recommended, rather than for one nobody would run.
+if [ -n "${HYBRID_SCALING_THREADS:-}" ]; then
+    HYBRID_SCALING_RANKS=${HYBRID_SCALING_RANKS:-"1 2 4 8"}
+    HYBRID_SCALING_DURATION=${HYBRID_SCALING_DURATION:-${MEM_DURATION:-300}}
+    echo ""
+    echo "==== [7/7] Hybrid scaling at ${HYBRID_SCALING_THREADS} thr/rank ==========="
+    HSFILE="${RESULTS_DIR}/${PREFIX}_hybrid_scaling.csv"
+    : > "${HSFILE}"
+    export OMP_NUM_THREADS=${HYBRID_SCALING_THREADS}
+
+    for P in ${HYBRID_SCALING_RANKS}; do
+        # A point that would not fit is skipped rather than oversubscribed: its
+        # time would measure contention and sit on the same axis as points that
+        # do not, which is worse than a gap.
+        if [ $(( P * HYBRID_SCALING_THREADS )) -gt "${AVAILABLE_CORES}" ]; then
+            echo "  skipping -np ${P} x ${HYBRID_SCALING_THREADS} thr:" \
+                 "needs $(( P * HYBRID_SCALING_THREADS )) of ${AVAILABLE_CORES} cores"
+            continue
+        fi
+        for STRATEGY in bcast scatter; do
+            echo "  -np ${P} x ${HYBRID_SCALING_THREADS} thr · ${STRATEGY}"
+            csv_append "${HSFILE}" \
+                ${MPI_LAUNCHER} "${P}" ${MPIRUN_EXTRA} \
+                $(bind_flags "${P}" "${HYBRID_SCALING_THREADS}") \
+                "${BUILD_DIR}/benchmarks/benchmark_MPI_Main" \
+                ${BENCH_ARGS} "${HYBRID_SCALING_DURATION}" "${STRATEGY}"
+            note_status "${PIPESTATUS[0]}" "hybscale-${P}x${HYBRID_SCALING_THREADS}-${STRATEGY}"
+        done
     done
 fi
 
