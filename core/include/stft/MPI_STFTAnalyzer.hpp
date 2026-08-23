@@ -20,7 +20,8 @@
  * 4. Each rank calls STFTAnalyzer::analyzeRange() on its block.  The per-rank
  *    magnitudes are a contiguous slice of the final spectrogram buffer.
  * 5. MPI_Gatherv assembles the full magnitude matrix on the root rank.
- *    Non-root ranks receive an empty SpectrogramData.
+ *    Non-root ranks receive an empty SpectrogramData.  The magnitudes travel
+ *    as float (stft::Magnitude), half the bytes the double matrix would cost.
  *
  * ─── Memory scalability ─────────────────────────────────────────────────────
  * Step 3 is what decides whether the algorithm weak-scales.  Broadcasting the
@@ -29,9 +30,14 @@
  * input as well as the work, so the per-rank input footprint falls as O(N/P).
  * Distribution::Scatter is the default; Broadcast is kept for comparison.
  *
- * The gather side is deliberately unchanged: root still assembles the complete
- * totalFrames x numBins matrix, which at typical geometries is larger than the
- * input signal itself.  The input bottleneck is removed, the output one is not.
+ * The gather side is deliberately unchanged in SHAPE: root still assembles the
+ * complete totalFrames x numBins matrix, which at typical geometries is as
+ * large as the input signal itself.  The input bottleneck is removed, the
+ * output one is not — storing the matrix as float halves what it costs, but a
+ * volume that does not fall with P still bounds the speedup, and measurement
+ * shows it is what makes the strong-scaling curve turn over.  Removing it means
+ * not centralising the output at all (parallel write), which is a change to
+ * what the algorithm produces, not to how it produces it.
  *
  * ─── Hybrid MPI + OpenMP ────────────────────────────────────────────────────
  * By default STFTAnalyzer uses `#pragma omp parallel for` over its frame block,
@@ -63,9 +69,22 @@
 #include <cstdint>
 #include <algorithm>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace stft {
+
+/**
+ * @brief The MPI datatype of one spectrogram magnitude.
+ *
+ * Kept next to the only collective that transfers magnitudes, and asserted
+ * against the element type it must match: a datatype that disagrees with the
+ * buffer it describes is not a compile error, it is silent corruption of half
+ * the spectrogram.  Change stft::Magnitude and this fails to compile.
+ */
+inline const MPI_Datatype kMagnitudeType = MPI_FLOAT;
+static_assert(std::is_same_v<Magnitude, float>,
+              "kMagnitudeType must be updated to match stft::Magnitude.");
 
 /**
  * @brief How the input samples are moved from root to the other ranks.
@@ -182,17 +201,49 @@ public:
     // ── Analysis ──────────────────────────────────────────────────────────────
 
     /**
+     * @brief Wall-clock split of the last analyze() call, in milliseconds.
+     *
+     * Measured per rank, without extra barriers: a barrier would move waiting
+     * time out of the phase that causes it and into an artificial one, which
+     * is precisely the attribution this is meant to establish. Time a rank
+     * spends blocked inside a collective therefore counts against that
+     * collective, which is what "where does the time go" should mean.
+     *
+     * Only meaningful after analyze() has returned. The benchmark reduces
+     * these with MPI_MAX to get the critical path.
+     */
+    struct PhaseTimes {
+        double distributeMs = 0.0;   ///< Step 3: broadcast or scatter of the input
+        double computeMs    = 0.0;   ///< Step 4: local STFT over this rank's frames
+        double gatherMs     = 0.0;   ///< Step 5: gather of the magnitudes on root
+    };
+
+    /// @brief Phase split of the most recent analyze() call on this rank.
+    [[nodiscard]] const PhaseTimes& phaseTimes() const noexcept { return phases_; }
+
+    /**
      * @brief Distributed STFT.  All ranks must call this collectively.
      *
-     * @param signalOnRoot  On rank 0: the full audio signal.
-     *                      On other ranks: any value (contents are ignored and
-     *                      overwritten by the incoming samples; under Scatter
-     *                      the copy is released before the slice is allocated).
+     * @param signalOnRoot  On rank 0: the full audio signal, read in place and
+     *                      never modified.
+     *                      On other ranks: unused — pass an empty vector.  The
+     *                      incoming samples land in a buffer this call owns, so
+     *                      whatever a non-root rank passes is neither read nor
+     *                      written.
+     *
+     * Taken by const reference, which is the difference between distributing a
+     * signal and copying it first.  A by-value parameter would force root to
+     * copy the whole signal on every call before distributing it — at ten
+     * minutes of 44.1 kHz audio, 106 MiB allocated and memcpy'd before a single
+     * byte moves between ranks — and since only root would pay that cost, every
+     * other rank would sit idle waiting for it inside the distribute phase.
+     * Both distribution paths instead write into a buffer owned here (see
+     * below), so root can read the caller's signal exactly where it already is.
      * @return On rank 0: a fully populated SpectrogramData.
      *         On other ranks: an empty SpectrogramData (numFrames == 0).
      */
     [[nodiscard]] SpectrogramData
-    analyze(std::vector<double> signalOnRoot) const
+    analyze(const std::vector<double>& signalOnRoot) const
     {
         const std::size_t frameSize = engine_.frameSize();
         const std::size_t numBins   = frameSize / 2 + 1;
@@ -221,20 +272,37 @@ public:
         // ── Step 3: move the sample data to the ranks ─────────────────────
         // Both branches produce (localSignal, localStart) such that local frame
         // localStart + fi is global frame myStart + fi.
-        std::vector<double> localSlice;      // Scatter path only
+        //
+        // Root never allocates here under either strategy: it already holds the
+        // signal and reads its own block in place.  Only the other ranks need
+        // somewhere to receive into, and this is it — the whole signal under
+        // Broadcast, this rank's slice under Scatter.
+        std::vector<double> incoming;        // non-root ranks only
         std::size_t         localStart = 0;
 
-        if (dist_ == Distribution::Broadcast) {
-            if (me != MPIContext::root)
-                signalOnRoot.resize(signalLen, 0.0);
+        const double tDistribute0 = MPI_Wtime();
 
-            MPI_Bcast(signalOnRoot.data(),
+        if (dist_ == Distribution::Broadcast) {
+            // MPI_Bcast's buffer is a single INOUT parameter, so the C binding
+            // cannot express "read-only on root" and there is no const overload
+            // to reach for.  On root the call only ever reads it — root is the
+            // source — so casting away const here is sound.  Non-root ranks
+            // broadcast into a buffer of their own, never the caller's.
+            double* buf;
+            if (me == MPIContext::root) {
+                buf = const_cast<double*>(signalOnRoot.data());
+            } else {
+                incoming.resize(signalLen, 0.0);
+                buf = incoming.data();
+            }
+
+            MPI_Bcast(buf,
                       static_cast<int>(signalLen),
                       MPI_DOUBLE,
                       MPIContext::root,
                       MPI_COMM_WORLD);
 
-            localStart = myStart;         // indices stay global
+            localStart = myStart;         // indices stay global on every rank
         } else {
             // sendcounts / displs are in samples and are only read on root.
             // Successive blocks overlap by (frameSize - hopSize) samples: the
@@ -274,20 +342,17 @@ public:
 
                 localStart = myStart;
             } else {
-                // A non-root rank must not keep the copy the caller handed it,
-                // or the O(N/P) footprint would be O(N) again.  Released before
-                // the slice is allocated so the peak never holds both.
-                signalOnRoot.clear();
-                signalOnRoot.shrink_to_fit();
-
+                // The O(N/P) footprint this strategy exists for: a non-root rank
+                // allocates its own slice and nothing else — there is no copy of
+                // the caller's signal to hold onto in the meantime.
                 const std::size_t myLen = lay.samples(me).count;
-                localSlice.resize(myLen, 0.0);
+                incoming.resize(myLen, 0.0);
 
                 MPI_Scatterv(nullptr,
                              nullptr,
                              nullptr,
                              MPI_DOUBLE,
-                             localSlice.data(),
+                             incoming.data(),
                              static_cast<int>(myLen),
                              MPI_DOUBLE,
                              MPIContext::root,
@@ -302,17 +367,27 @@ public:
             }
         }
 
-        // Root always works on the full signal it owns; the other ranks work on
-        // whatever they received.
+        phases_.distributeMs = (MPI_Wtime() - tDistribute0) * 1000.0;
+
+        // Root always works on the full signal it owns, addressed globally; the
+        // other ranks work on whatever they received.  Under Broadcast that is
+        // also the full signal, so localStart is global there too; under Scatter
+        // it is the rank's own slice and localStart is 0.
         const std::vector<double>& localSignal =
-            (dist_ == Distribution::Broadcast || me == MPIContext::root)
-                ? signalOnRoot : localSlice;
+            (me == MPIContext::root) ? signalOnRoot : incoming;
 
         // ── Step 4: local STFT (OpenMP-parallel within each rank) ─────────
+        const double tCompute0 = MPI_Wtime();
         SpectrogramData local = engine_.analyzeRange(localSignal, localStart, myCount);
+        phases_.computeMs = (MPI_Wtime() - tCompute0) * 1000.0;
 
         // ── Step 5: gather on root via MPI_Gatherv ────────────────────────
-        // recvcounts and displs are in units of doubles (numBins per frame).
+        // recvcounts and displs are in units of magnitudes (numBins per frame),
+        // which since SpectrogramData went to float are half the bytes they
+        // were — this is the transfer that bounds the whole algorithm's
+        // scaling, so halving it is the cheapest win available on this path.
+        const double tGather0 = MPI_Wtime();
+
         std::vector<int> recvcounts(P, 0);
         std::vector<int> displs(P, 0);
 
@@ -324,7 +399,7 @@ public:
         }
 
         SpectrogramData result;
-        double* recvbuf = nullptr;
+        Magnitude* recvbuf = nullptr;
 
         if (me == MPIContext::root) {
             result.numFrames  = totalFrames;
@@ -332,19 +407,27 @@ public:
             result.frameSize  = frameSize;
             result.hopSize    = engine_.hopSize();
             result.sampleRate = static_cast<std::uint32_t>(sampleRate);
-            result.magnitudes.resize(totalFrames * numBins, 0.0);
+            // Not zero-filled: the MPI_Gatherv below covers this buffer
+            // exactly — the per-rank counts sum to totalFrames and their
+            // displacements are contiguous — so a fill here would write
+            // 53 MiB of zeros for the collective to overwrite byte for byte.
+            // At this geometry that measured 11 ms against 5 ms for the
+            // transfer itself.  See MagnitudeBuffer in SpectrogramData.hpp.
+            result.magnitudes.resize(totalFrames * numBins);
             recvbuf = result.magnitudes.data();
         }
 
         MPI_Gatherv(local.magnitudes.data(),
                     static_cast<int>(myCount * numBins),
-                    MPI_DOUBLE,
+                    kMagnitudeType,
                     recvbuf,
                     recvcounts.data(),
                     displs.data(),
-                    MPI_DOUBLE,
+                    kMagnitudeType,
                     MPIContext::root,
                     MPI_COMM_WORLD);
+
+        phases_.gatherMs = (MPI_Wtime() - tGather0) * 1000.0;
 
         return result;  // empty on non-root ranks
     }
@@ -417,6 +500,10 @@ private:
         lay.rem  = lay.totalFrames % P;
         return lay;
     }
+
+    /// Written by analyze(), which is const: the split is observed state about
+    /// the last call, not part of the analyzer's logical value.
+    mutable PhaseTimes         phases_{};
 
     const MPIContext&          ctx_;
     STFTAnalyzer<FFT, Window>  engine_;

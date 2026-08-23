@@ -239,7 +239,7 @@ template<typename Window>
     // the transform followed the signal.  Rows are contiguous in the flat
     // magnitude buffer, so the frame can be viewed as a span without copying.
     const std::size_t mid = spec.numFrames / 2;
-    const std::span<const double> midFrame(
+    const std::span<const Magnitude> midFrame(
         spec.magnitudes.data() + mid * spec.numBins, spec.numBins);
     const std::size_t peakBin = static_cast<std::size_t>(
         std::ranges::max_element(midFrame) - midFrame.begin());

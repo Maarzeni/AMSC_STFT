@@ -366,9 +366,17 @@ TEST_F(STFTAnalyzerTest, PrototypeConstructedEngineMatchesDefaultConstruction) {
 // The combination the granularity benchmark relies on: Transform mode paired
 // with ParallelFFT, actually engaging its OpenMP-parallel transform. This is
 // the one prior tests never exercised at all. Different algorithm, different
-// floating-point summation order, so the tolerance is the same one
-// test_ParallelFFT.cpp uses for cross-configuration comparisons, not the
-// bit-exact one above.
+// floating-point summation order, so the tolerance cannot be the bit-exact one
+// above.
+//
+// It is also the one comparison in this file bounded by the STORAGE type rather
+// than by the arithmetic. The two engines agree to roughly double precision,
+// but both answers are narrowed to stft::Magnitude (float) on the way into the
+// spectrogram, and two doubles that differ in the 15th digit can land on
+// adjacent floats. Magnitudes here are O(1), where consecutive floats are
+// ~1.2e-7 apart, so anything tighter than that tests the rounding and not the
+// transform. 1e-6 leaves an order of magnitude of headroom over that floor
+// while still being four orders below the 1e-3 the peaks are checked to.
 TEST_F(STFTAnalyzerTest, TransformModeWithParallelFFTMatchesFramesReference) {
     constexpr std::size_t threads = 2;
     STFTAnalyzer<ParallelFFT, HannWindow> parallelAnalyzer(
@@ -378,5 +386,5 @@ TEST_F(STFTAnalyzerTest, TransformModeWithParallelFFTMatchesFramesReference) {
 
     const auto signal = makeMultiTone(FRAME + 5 * HOP, FRAME);
     expectSpectraNear(analyzer.analyze(signal),
-                      parallelAnalyzer.analyze(signal), 1e-8);
+                      parallelAnalyzer.analyze(signal), 1e-6);
 }

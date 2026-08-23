@@ -127,7 +127,7 @@ TEST(ImageExporterTest, ThrowsWhenFileCannotBeOpened) {
     SpectrogramData spec;
     spec.numFrames = 1;
     spec.numBins   = 1;
-    spec.magnitudes = {1.0};
+    spec.magnitudes = {1.0f};
 
     const auto badPath = std::filesystem::temp_directory_path() /
                           "amsc_stft_missing_dir_xyz" / "out.png";
@@ -146,7 +146,7 @@ TEST(ImageExporterTest, WritesValidSignatureAndIHDRDimensions) {
     spec.numBins   = numBins;
     spec.magnitudes.resize(numFrames * numBins);
     for (std::size_t i = 0; i < spec.magnitudes.size(); ++i)
-        spec.magnitudes[i] = static_cast<double>(i) + 0.5;
+        spec.magnitudes[i] = static_cast<Magnitude>(i) + 0.5f;
 
     TempPngFile file("amsc_stft_test_dims.png");
     ImageExporter::exportPNG(spec, file.path().string());
@@ -180,7 +180,7 @@ TEST(ImageExporterTest, PixelColorsMatchHeatmapAndFrequencyAxisIsFlipped) {
     SpectrogramData spec;
     spec.numFrames = 1;
     spec.numBins   = 2;
-    spec.magnitudes = {1.0, 0.0};  // bin 0 (DC) loud, bin 1 (Nyquist) silent
+    spec.magnitudes = {1.0f, 0.0f};  // bin 0 (DC) loud, bin 1 (Nyquist) silent
 
     TempPngFile file("amsc_stft_test_pixels.png");
     ImageExporter::exportPNG(spec, file.path().string());
@@ -212,7 +212,7 @@ TEST(ImageExporterTest, AllZeroSpectrogramRendersFullyBlack) {
     SpectrogramData spec;
     spec.numFrames = 1;
     spec.numBins   = 1;
-    spec.magnitudes = {0.0};  // no signal at all -> peak is degenerate
+    spec.magnitudes = {0.0f};  // no signal at all -> peak is degenerate
 
     TempPngFile file("amsc_stft_test_silence.png");
     ImageExporter::exportPNG(spec, file.path().string());

@@ -22,7 +22,7 @@ using namespace stft;
 TEST(SpectrogramDataTest, AtThrowsOutOfRange) {
     SpectrogramData s;
     s.numFrames = 2; s.numBins = 4;
-    s.magnitudes.resize(8, 1.0);
+    s.magnitudes.resize(8, Magnitude{1});
     // at() is [[nodiscard]]; EXPECT_THROW only cares whether the call throws
     // and intentionally discards the (never-reached) return value.
 #if defined(__GNUC__) || defined(__clang__)
@@ -48,11 +48,11 @@ TEST(SpectrogramDataTest, AtIndexesRowMajorByFrameThenBin) {
 
     for (std::size_t f = 0; f < s.numFrames; ++f)
         for (std::size_t b = 0; b < s.numBins; ++b)
-            s.magnitudes[f * s.numBins + b] = static_cast<double>(f * 10 + b);
+            s.magnitudes[f * s.numBins + b] = static_cast<Magnitude>(f * 10 + b);
 
     for (std::size_t f = 0; f < s.numFrames; ++f)
         for (std::size_t b = 0; b < s.numBins; ++b)
-            EXPECT_DOUBLE_EQ(s.at(f, b), static_cast<double>(f * 10 + b))
+            EXPECT_FLOAT_EQ(s.at(f, b), static_cast<Magnitude>(f * 10 + b))
                 << "frame " << f << ", bin " << b;
 }
 

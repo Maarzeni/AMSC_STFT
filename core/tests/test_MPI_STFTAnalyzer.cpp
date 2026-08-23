@@ -1,20 +1,24 @@
 /**
  * @file test_MPI_STFTAnalyzer.cpp
- * @brief Consistency test: MPI distributed result == serial STFTAnalyzer result.
+ * @brief Consistency test: MPI distributed result == serial STFTAnalyzer result,
+ *        plus targeted checks of analyze()'s other guarantees.
  *
  * Run with at least 2 ranks:
  *   mpirun -np 2 ./test_MPI_STFTAnalyzer
  *   mpirun -np 4 ./test_MPI_STFTAnalyzer
  *
- * Each test verifies that MPI_STFTAnalyzer::analyze produces elementwise
- * identical magnitudes to STFTAnalyzer::analyze, regardless of the number
- * of ranks.
+ * MPISTFTConsistency verifies that MPI_STFTAnalyzer::analyze produces
+ * elementwise identical magnitudes to STFTAnalyzer::analyze, regardless of the
+ * number of ranks. Every case is run under both distribution strategies
+ * (Broadcast and Scatter): they differ only in how the samples reach the
+ * ranks, so they are held to the same reference and the same tolerance.
  *
- * Every case is run under both distribution strategies (Broadcast and
- * Scatter): they differ only in how the samples reach the ranks, so they are
- * held to the same reference and the same tolerance.  CMake registers the
- * suite at 1, 2, 3 and 4 ranks — 3 is the interesting one, since it leaves an
- * uneven remainder for every signal length used here.
+ * MPISTFTBehavior checks two further guarantees documented on analyze() that
+ * a magnitude comparison would not catch: root's signal is read, never
+ * written, and phaseTimes() reports the split of the call that just returned.
+ *
+ * CMake registers the suite at 1, 2, 3 and 4 ranks — 3 is the interesting one,
+ * since it leaves an uneven remainder for every signal length used here.
  */
 
 #include <gtest/gtest.h>
@@ -189,5 +193,65 @@ TEST(MPISTFTConsistency, FewerFramesThanRanks) {
 
         for (const Distribution dist : kStrategies)
             expectMatchesSerial(signal, FRAME, HOP, SR, dist);
+    }
+}
+
+// ── analyze()'s other guarantees ─────────────────────────────────────────────
+// Not covered by a magnitude comparison against the serial reference: that
+// root's own signal comes back unchanged, and that phaseTimes() reports the
+// split of the call that just returned rather than stale or garbage data.
+
+TEST(MPISTFTBehavior, PhaseTimesAreSaneAfterAnalyze) {
+    constexpr std::size_t   FRAME = 1024;
+    constexpr std::size_t   HOP   = 512;
+    constexpr std::uint32_t SR    = 44100;
+
+    MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(*g_ctx, FRAME, HOP, SR);
+
+    // Default-constructed: no analyze() call has happened yet on this instance.
+    EXPECT_EQ(analyzer.phaseTimes().distributeMs, 0.0);
+    EXPECT_EQ(analyzer.phaseTimes().computeMs,    0.0);
+    EXPECT_EQ(analyzer.phaseTimes().gatherMs,     0.0);
+
+    // 4 seconds of audio, same scale as DCSignalMatchesSerial: enough frames
+    // that the compute phase is not a coin flip against timer resolution.
+    const std::vector<double> signal =
+        (g_ctx->isRoot()) ? sineSignal(4 * SR, 440.0, SR) : std::vector<double>{};
+    const SpectrogramData spec = analyzer.analyze(signal);
+    (void)spec;
+
+    const auto& ph = analyzer.phaseTimes();
+    EXPECT_GE(ph.distributeMs, 0.0);
+    EXPECT_GE(ph.computeMs,    0.0);
+    EXPECT_GE(ph.gatherMs,     0.0);
+    EXPECT_LT(ph.distributeMs, 60000.0) << "implausibly large: likely a timer bug";
+    EXPECT_LT(ph.computeMs,    60000.0) << "implausibly large: likely a timer bug";
+    EXPECT_LT(ph.gatherMs,     60000.0) << "implausibly large: likely a timer bug";
+
+    // Every rank does local work in Step 4, so this is the one phase every
+    // rank — not just root — can expect to be measurably above zero.
+    EXPECT_GT(ph.computeMs, 0.0);
+}
+
+TEST(MPISTFTBehavior, RootSignalIsNotModified) {
+    constexpr std::size_t   FRAME = 512;
+    constexpr std::size_t   HOP   = 256;
+    constexpr std::uint32_t SR    = 44100;
+
+    for (const Distribution dist : kStrategies) {
+        MPI_STFTAnalyzer<IterativeFFT, HannWindow> analyzer(*g_ctx, FRAME, HOP,
+                                                             SR, dist);
+
+        const std::vector<double> original = sineSignal(2 * SR, 220.0, SR);
+        std::vector<double> signal =
+            g_ctx->isRoot() ? original : std::vector<double>{};
+
+        const SpectrogramData spec = analyzer.analyze(signal);
+        (void)spec;
+
+        if (g_ctx->isRoot()) {
+            EXPECT_EQ(signal, original) << label(dist)
+                << ": root's signal must be read, never written";
+        }
     }
 }

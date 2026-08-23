@@ -245,7 +245,10 @@ public:
         result.frameSize  = frameSize_;
         result.hopSize    = hopSize_;
         result.sampleRate = sampleRate_;
-        result.magnitudes.resize(count * numBins, 0.0);
+        // Not zero-filled: the frame loop below writes every one of the
+        // count * numBins values before anything reads them (see
+        // MagnitudeBuffer in SpectrogramData.hpp).
+        result.magnitudes.resize(count * numBins);
 
         if (count == 0) return result;
 
@@ -323,7 +326,7 @@ private:
                       FFT&    fft,
                       std::vector<double>&               buf,
                       std::vector<std::complex<double>>& spec,
-                      double* outRow) const
+                      Magnitude* outRow) const
     {
         const std::size_t offset = frameIdx * hopSize_;
         const std::size_t numBins = frameSize_ / 2 + 1;
@@ -343,9 +346,12 @@ private:
         fft.forward(spec);
 
         // One-sided magnitude, normalized so that a full-scale sinusoid gives 1.0.
+        // The division stays in double; the narrowing to Magnitude happens once,
+        // here, on the way into the output matrix — see SpectrogramData.hpp for
+        // why the matrix is float and the arithmetic above it is not.
         const double norm = static_cast<double>(frameSize_) * win.coherentGain();
         for (std::size_t k = 0; k < numBins; ++k)
-            outRow[k] = std::abs(spec[k]) / norm;
+            outRow[k] = static_cast<Magnitude>(std::abs(spec[k]) / norm);
     }
 };
 

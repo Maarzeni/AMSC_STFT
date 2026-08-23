@@ -311,9 +311,27 @@ int main(int argc, char** argv) {
     // value: ParallelFFT would otherwise read the ambient count when built,
     // and the setThreads(1) below would collapse it to serial along with the
     // frame loop instead of leaving it parallel independently of it.
+    // The same two ceilings benchmark_Main applies to its own granularity pair,
+    // and for the same reason: ParallelFFT splits ONE 1024-point transform over
+    // its threads, and past a handful of them the synchronisation costs more
+    // than the transform — measured at 17.8x slower than IterativeFFT on 16
+    // threads. Under a rank/thread sweep that reaches 24 or 48 threads per rank
+    // the arm stops being a measurement and becomes the longest thing in the
+    // job, which is how a rehearsal on MOX ran for four hours.
+    //
+    // Until now these variables were read only by benchmark_Main, so a caller
+    // that set AMSC_SKIP_GRANULARITY was silently obeyed in one binary and
+    // ignored in the other.
+    const bool withGranularity = std::getenv("AMSC_SKIP_GRANULARITY") == nullptr;
+    const int granThreads = [nThreads] {
+        const char* env = std::getenv("AMSC_GRANULARITY_THREADS");
+        const int wanted = env ? std::atoi(env) : 8;
+        return std::max(1, std::min(nThreads, wanted));
+    }();
+
     MPI_STFTAnalyzer<ParallelFFT, HannWindow> transformAnalyzer(
         ctx, frame, hop, SR,
-        [n = static_cast<std::size_t>(nThreads)] { return ParallelFFT(n); },
+        [n = static_cast<std::size_t>(granThreads)] { return ParallelFFT(n); },
         Parallelism::Transform, dist);
 
     if (ctx.isRoot()) bench::writeHeader(std::cout);
@@ -384,6 +402,7 @@ int main(int argc, char** argv) {
         // setThreads() does not reach this one: under Parallelism::Transform
         // the frame loop has no OpenMP region and the engine's thread count
         // was fixed when the factory captured it.
+        if (withGranularity) {
         const bench::Stats sTransform =
             measureMPI(ctx, warmup, reps, [&] {
                 const SpectrogramData out = transformAnalyzer.analyze(signal);
@@ -396,14 +415,98 @@ int main(int argc, char** argv) {
                                ctx.size(), nThreads, nThreads, std::nullopt,
                                static_cast<long long>(frames), sec, sHybrid,
                                sSerial.mean);
+            // granThreads, not nThreads: when the ceiling bites, this arm ran
+            // with fewer threads than the one above it and the label has to say
+            // so — otherwise the pair reads as a like-for-like comparison that
+            // it no longer is. Set AMSC_GRANULARITY_THREADS at or above the
+            // sweep's thread count to keep the two arms comparable.
             bench::writeTiming(std::cout, "mpi_granularity",
                                "sequential frames + ParallelFFT (" +
-                                   std::to_string(nThreads) + " thr/rank)",
-                               ctx.size(), nThreads, nThreads, std::nullopt,
+                                   std::to_string(granThreads) + " thr/rank)",
+                               ctx.size(), granThreads, granThreads, std::nullopt,
                                static_cast<long long>(frames), sec, sTransform,
                                sSerial.mean);
         }
+        }
     }
+
+    // ─── Phase split: where the wall-clock time actually goes ──────────────
+    // The scaling curves show speedup peaking around 24 ranks and falling
+    // beyond it, which a fitted model attributes to a term proportional to the
+    // rank count. A fit cannot say WHICH phase produces that term, and the two
+    // candidates behave differently: the gather moves a volume fixed by the
+    // problem size, while every root-centric collective also pays a per-message
+    // cost that grows with the number of ranks. Measuring the phases separates
+    // them — at fixed problem size, a cost that grows with P is latency, not
+    // volume.
+    //
+    // Reported as MPI_MAX over the ranks, matching measureMPI's convention:
+    // the collective is bounded by its slowest participant.
+    //
+    // Measured once per thread count, not once overall: the pure-MPI and
+    // hybrid rows above answer a different question each, and only writing
+    // both phase splits explicitly — each carrying its own thread count —
+    // lets a row be matched to the scaling row it explains.
+    std::vector<int> phaseThreadCounts = {1};
+    if (nThreads > 1) phaseThreadCounts.push_back(nThreads);
+
+    for (const int phaseThreads : phaseThreadCounts) {
+    setThreads(phaseThreads);
+    for (const double sec : durations) {
+        const std::size_t signalLen =
+            static_cast<std::size_t>(sec * static_cast<double>(SR));
+        const std::size_t frames =
+            STFTAnalyzer<IterativeFFT, HannWindow>::numFrames(signalLen, frame, hop);
+        if (frames == 0) continue;
+
+        std::vector<double> signal;
+        if (ctx.isRoot()) signal = bench::makeSignal(signalLen, SR);
+
+        // One warm-up call so first-touch page faults and the connection setup
+        // of the collectives are not charged to the phase they happen to land
+        // in; then the phases of a single settled call are read back.
+        ctx.barrier();
+        { const SpectrogramData warm = analyzer.analyze(signal);
+          bench::doNotOptimize(warm); }
+
+        ctx.barrier();
+        { const SpectrogramData out = analyzer.analyze(signal);
+          bench::doNotOptimize(out); }
+
+        const auto& ph = analyzer.phaseTimes();
+        const Spread dist_    = reduceSpread(ctx, ph.distributeMs);
+        const Spread comp_    = reduceSpread(ctx, ph.computeMs);
+        const Spread gath_    = reduceSpread(ctx, ph.gatherMs);
+
+        if (ctx.isRoot()) {
+            const auto row = [&](const std::string& name, const Spread& sp) {
+                bench::Row r;
+                r.kind      = "timing";
+                r.section   = "mpi_phases";
+                r.variant   = name;
+                r.ranks     = ctx.size();
+                r.threads   = phaseThreads;
+                r.frames    = static_cast<long long>(frames);
+                r.workloadS = sec;
+                // min_ms carries the SLOWEST rank, matching measureMPI's
+                // convention elsewhere in this file: a collective is bounded by
+                // its slowest participant, so that is the critical path and the
+                // number comparable with the scaling rows. mean_ms next to it
+                // exposes imbalance — the wider the gap, the more of the phase
+                // is ranks waiting rather than working.
+                r.minMs     = sp.max;
+                r.meanMs    = sp.avg;
+                bench::writeRow(std::cout, r);
+            };
+            const std::string suffix =
+                " (" + std::to_string(phaseThreads) + " thr/rank)";
+            row("distribute (scatter/bcast of input)" + suffix, dist_);
+            row("compute (local STFT)"                + suffix, comp_);
+            row("gather (spectrogram to root)"        + suffix, gath_);
+        }
+    }
+    }
+    setThreads(nThreads);
 
     // ── Memory: analytic ────────────────────────────────────────────────────
     // How many input samples each rank has to hold is exact arithmetic on the
