@@ -16,7 +16,6 @@ Both read from and write to their default locations under results/; pass
   3  stft_mpi        STFT on MPI alone (1 thread per rank), speedup
   4  stft_hybrid     STFT with 2 threads per rank, speedup against rank count
   5  memory          broadcast vs scatter, mean per-rank footprint vs ranks
-  6  weak_scaling    constant work per rank: time should stay flat
 
 Each figure carries a parameter box to its right listing everything held fixed,
 so a figure lifted into a slide still says what it measured.
@@ -385,137 +384,236 @@ def fig_stft(rows, machine, stat, out, mode, metric="speedup"):
 
 
 def fig_memory(mem, machine, out):
-    """Mean per-rank footprint, one bar pair per rank count.
+    """Figure 5: what the input distribution costs each rank, two ways.
 
-    The mean is the statistic that answers what the scatter exists to answer —
-    whether the job still fits in memory — while MAX is dominated by the root
-    rank, which holds the signal it read under either strategy, and MIN
-    describes the single leanest rank rather than the job.
+    Upper panel, the ANALYTIC input footprint: how many samples one rank has to
+    hold under each strategy. It is exact arithmetic on the frame layout, not a
+    measurement, and it is the quantity Distribution actually controls —
+    broadcast leaves every rank holding the whole signal however many ranks are
+    added, scatter leaves it about 1/P. This is the claim the feature makes, and
+    the panel is on a log axis because a curve that falls by a factor of 191 has
+    no other honest shape.
+
+    Lower panel, the MEASURED peak resident memory of the whole process. It does
+    NOT fall by 191, and the gap between the panels is the point rather than a
+    disappointment: VmHWM includes the complete spectrogram that MPI_Gatherv
+    assembles on the root rank, and the MPI runtime's own buffers, neither of
+    which shrinks when ranks are added. The input bottleneck is removed; the
+    output one is not, and the two panels together say exactly that.
+
+    The mean is the statistic in the lower panel because it answers what the
+    scatter exists to answer — whether the job still fits in memory — while MAX
+    is dominated by the root rank, which holds what it read under either
+    strategy, and MIN describes the leanest rank rather than the job.
     """
     rss = defaultdict(dict)
+    analytic = defaultdict(dict)
+    workloads: set[float] = set()
     for r in mem:
         # Only the dedicated bcast-vs-scatter sweep: three other sections of
         # run_suite.sh also emit memory_rss scatter rows, and without this
         # filter the last one read silently replaces the scatter series with a
         # different experiment's — the two strategies then no longer agree even
         # at one rank, where by construction they must.
-        if (r["machine"] == machine and r["kind"] == "memory_rss"
-                and r.get("source") == MEMORY_SOURCE and r.get("ranks")):
+        if r["machine"] != machine or r.get("source") != MEMORY_SOURCE:
+            continue
+        if not r.get("ranks"):
+            continue
+        if r["kind"] == "memory_rss":
             rss[r["strategy"]][r["ranks"]] = r["avg_mib"]
+        elif r["kind"] == "memory_analytic":
+            analytic[r["strategy"]][r["ranks"]] = r["avg_mib"]
+            # Only the analytic rows carry the workload: memory_rss is a
+            # high-water mark of the process, not of one measured signal, so
+            # the C++ writer leaves its workload column empty. Reading it only
+            # here is why the configuration list can name the audio at all.
+            if r.get("workload_s"):
+                workloads.add(float(r["workload_s"]))
+
     if not {"bcast", "scatter"} <= set(rss):
         print(f"  skip memory: need both strategies measured for {machine}")
         return
-
     ranks = sorted(set(rss["bcast"]) & set(rss["scatter"]))
     if not ranks:
         print("  skip memory: strategies not measured at the same rank counts")
         return
+    have_analytic = {"bcast", "scatter"} <= set(analytic) and all(
+        p in analytic["bcast"] and p in analytic["scatter"] for p in ranks)
 
-    fig, ax = plt.subplots(figsize=(11.0, 5.6))
+    style()
+    if have_analytic:
+        fig, (ax_a, ax) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
+                                       gridspec_kw={"hspace": 0.18})
+    else:
+        fig, ax = plt.subplots(figsize=(11.0, 5.6))
+        ax_a = None
     fig.subplots_adjust(right=0.74)
-    width, xs = 0.34, range(len(ranks))
-    for i, (key, label) in enumerate((("bcast", "broadcast"),
-                                      ("scatter", "scatter"))):
-        vals = [rss[key][p] for p in ranks]
-        offs = [x + (i - 0.5) * (width + 0.02) for x in xs]
-        bars = ax.bar(offs, vals, width, label=label,
-                      color=STRATEGY_COLOR[label], zorder=3)
-        ax.bar_label(bars, fmt="%.0f", padding=4, fontsize=11, color=INK_SOFT)
 
+    xs = range(len(ranks))
+    width = 0.34
+
+    if ax_a is not None:
+        for strategy, offset in (("bcast", -0.5), ("scatter", 0.5)):
+            ys = [analytic[strategy][p] for p in ranks]
+            ax_a.plot(xs, ys, color=STRATEGY_COLOR[
+                          "broadcast" if strategy == "bcast" else "scatter"],
+                      marker="o", markeredgecolor="white", markeredgewidth=1.2,
+                      linewidth=3.0, markersize=9,
+                      label="broadcast" if strategy == "bcast" else "scatter")
+        ax_a.set_yscale("log", base=10)
+        ax_a.set_ylabel("input held per rank [MiB]")
+        ax_a.legend(loc="center left")
+        ax_a.set_title("Input distribution: broadcast vs scatter",
+                       color=INK, loc="left", fontsize=15.5, pad=14)
+        best = ranks[-1]
+        ratio = analytic["bcast"][best] / analytic["scatter"][best]
+        # Parked in the empty band between the two curves rather than beside
+        # the last point, where it landed on the scatter line itself.
+        ax_a.text(0.985, 0.30, f"{ratio:.0f}x less at {best} ranks",
+                  transform=ax_a.transAxes, fontsize=11.5, color=INK_SOFT,
+                  ha="right", va="center")
+
+    for strategy, offset, name in (("bcast", -width / 2, "broadcast"),
+                                   ("scatter", width / 2, "scatter")):
+        ys = [rss[strategy][p] for p in ranks]
+        bars = ax.bar([x + offset for x in xs], ys, width,
+                      color=STRATEGY_COLOR[name], label=name, zorder=3)
+        ax.bar_label(bars, fmt="%.0f", fontsize=10, color=INK_SOFT, padding=2)
+
+    ax.set_ylabel("mean resident memory per rank [MiB]")
+    ax.set_xlabel("MPI ranks")
     ax.set_xticks(list(xs))
     ax.set_xticklabels([str(p) for p in ranks])
-    ax.set_xlabel("MPI ranks")
-    ax.set_ylabel("mean resident memory per rank [MiB]")
     ax.margins(y=0.18)
-    ax.legend(loc="upper right")
-    ax.set_title("Input distribution: broadcast vs scatter",
-                 color=INK, loc="left", fontsize=15.5, pad=14)
+    if ax_a is None:
+        ax.legend(loc="upper right")
+        ax.set_title("Input distribution: broadcast vs scatter",
+                     color=INK, loc="left", fontsize=15.5, pad=14)
+    else:
+        ax.set_title("measured peak RSS of the whole process",
+                     color=INK_SOFT, loc="left", fontsize=12, pad=8)
 
+    audio = ("/".join(f"{w:g}" for w in sorted(workloads)) if workloads
+             else "unknown")
     param_box(fig, [("machine", machine),
-                    ("metric", "peak RSS"),
-                    ("", "(VmHWM), mean"),
-                    ("", "over the ranks"),
-                    ("threads / rank", 2),
+                    ("audio [s]", audio),
                     ("", ""),
-                    ("note", "broadcast keeps"),
-                    ("", "the whole signal"),
-                    ("", "on every rank;"),
-                    ("", "scatter keeps"),
-                    ("", "about 1/P of it"),
+                    ("upper", "exact arithmetic:"),
+                    ("", "input samples"),
+                    ("", "one rank holds"),
                     ("", ""),
-                    ("", "the root holds"),
-                    ("", "what it read under"),
-                    ("", "either strategy")])
+                    ("lower", "measured VmHWM,"),
+                    ("", "mean over ranks."),
+                    ("", "It also holds the"),
+                    ("", "gathered output,"),
+                    ("", "which no rank"),
+                    ("", "count shrinks")])
     finish(fig, out)
 
 
-def fig_weak(rows, machine, stat, out):
-    """Constant work per rank: the time should stay flat, the efficiency at 1.
+HYBRID_SPLIT_SOURCE = "hybrid_split"
 
-    Speedup is meaningless here — the problem is not fixed — so this figure
-    plots the time itself and the weak-scaling efficiency t(1)/t(P), which is
-    the fraction of the ideal flat line that survives.
+# Cores per socket and per node of the machine figure 9 describes, used only to
+# annotate where a rank stops fitting in one NUMA domain. Galileo100's Xeon 8260
+# is 2 x 24. A machine with a different layout needs these changed; a split that
+# matches neither is simply not annotated, so a wrong value cannot invent a
+# boundary that is not there.
+CORES_PER_SOCKET, CORES_PER_NODE = 24, 48
+
+
+def fig_hybrid_split(rows, machine, stat, out):
+    """Figure 9: the rank/thread split, at a fixed number of cores.
+
+    Every point here spends the SAME workers — the sweep divides one machine
+    into P ranks of T threads with P x T held constant — so this is not a
+    scaling curve and its ideal is not a diagonal. Perfect use of the cores
+    would put every split on one horizontal line at that worker count, and the
+    distance below it is what the decomposition costs. The x axis is threads
+    per rank because that is the knob; the rank count each one implies is
+    printed under it, since a reader thinking in ranks should not have to
+    divide.
+
+    Two vertical marks carry the hardware. A rank of 24 threads is exactly one
+    socket of this machine; a rank of 48 spans both, so its threads reach memory
+    attached to the other socket. If the curve turns between those two marks,
+    the turn is NUMA, not MPI.
     """
-    pts = {}
+    pts, serial = {}, None
     for r in rows:
-        if (r["machine"] != machine or r.get("source") != "weak_scaling"
-                or r["section"] != "mpi"):
+        if r["machine"] != machine or r.get("source") != HYBRID_SPLIT_SOURCE:
             continue
-        if r["variant"].startswith("serial") and r["ranks"] == 1:
+        if r.get("section") != "mpi" or not r.get(stat):
             continue
-        if not r["variant"].startswith("MPI pure") or not r["ranks"]:
-            continue
-        p = r["ranks"]
-        pts[p] = min(pts.get(p, r[stat]), r[stat])
-    if len(pts) < 2:
-        print(f"  skip {out.name}: weak-scaling sweep not in the data")
+        variant, t = r.get("variant", ""), float(r[stat])
+        if variant.startswith("serial"):
+            serial = t if serial is None else min(serial, t)
+        elif variant.startswith("hybrid") and r.get("ranks") and r.get("threads"):
+            threads, ranks = int(r["threads"]), int(r["ranks"])
+            # One launch per split, so a repeated key means a repeated point:
+            # keep the faster, matching the "min" convention of the other rows.
+            if threads not in pts or t < pts[threads][0]:
+                pts[threads] = (t, ranks)
+
+    if len(pts) < 2 or not serial:
+        print(f"  skip {out.name}: need a serial baseline and two splits")
         return
-    base = pts[min(pts)]
 
-    fig, (ax_t, ax_e) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
-                                     gridspec_kw={"hspace": 0.15})
+    xs      = sorted(pts)
+    speedup = [serial / pts[t][0] for t in xs]
+    workers = max(t * pts[t][1] for t in xs)
+
+    style()
+    fig, ax = plt.subplots(figsize=(11.0, 5.6))
     fig.subplots_adjust(right=0.74)
-    xs = sorted(pts)
-    times = [pts[p] for p in xs]
-    eff = [base / pts[p] for p in xs]
 
-    ax_t.plot(xs, times, color=SLOT[0], marker="o", markeredgecolor="white",
-              markeredgewidth=1.2, label="measured", zorder=3)
-    ax_t.axhline(base, color=REFERENCE, linewidth=1.3, linestyle="--",
-                 label="ideal (flat)", zorder=1)
-    ax_e.plot(xs, eff, color=SLOT[0], marker="o", markeredgecolor="white",
-              markeredgewidth=1.2, label="measured", zorder=3)
-    ax_e.axhline(1.0, color=REFERENCE, linewidth=1.3, linestyle="--",
-                 label="ideal (1.0)", zorder=1)
+    # Evenly spaced rather than log-scaled: these are seven discrete
+    # configurations, not samples of a continuous variable, and on a log axis
+    # the 8- and 12-thread splits fall so close together that their labels
+    # collide. Position is an index; the value is on the tick.
+    pos = list(range(len(xs)))
 
-    for ax in (ax_t, ax_e):
-        ax.set_xscale("log", base=2)
-        ax.set_xticks(xs)
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.legend(loc="best")
-    ax_t.set_ylabel("execution time [ms]")
-    ax_e.set_ylabel("weak-scaling efficiency")
-    ax_e.set_xlabel("MPI ranks")
-    ax_t.set_title("STFT: weak scaling (constant work per rank)",
-                   color=INK, loc="left", fontsize=15.5, pad=14)
+    # Socket and node boundaries, drawn before the data so they sit behind it.
+    for threads, name in ((CORES_PER_SOCKET, "one socket"),
+                          (CORES_PER_NODE, "whole node")):
+        if threads in pts:
+            ax.axvline(pos[xs.index(threads)], color=GRID, linewidth=1.6,
+                       zorder=0)
+            ax.text(pos[xs.index(threads)], 0.02, f" {name}",
+                    transform=ax.get_xaxis_transform(), fontsize=10,
+                    color=INK_SOFT, rotation=90, va="bottom")
 
-    param_box(fig, [("machine", machine),
-                    ("statistic", stat[:-3]),
-                    ("threads / rank", 1),
-                    ("FFT", "IterativeFFT"),
-                    ("window", "Hann window"),
+    ax.axhline(workers, color=REFERENCE, linestyle="--", linewidth=2.0,
+               label=f"ideal ({workers} workers)", zorder=1)
+    ax.plot(pos, speedup, color=SLOT[0], marker="o", markeredgecolor="white",
+            markeredgewidth=1.2, linewidth=3.0, markersize=9, zorder=3)
+
+    best = max(xs, key=lambda t: serial / pts[t][0])
+    ax.plot([pos[xs.index(best)]], [serial / pts[best][0]], marker="o",
+            markersize=15, markerfacecolor="none", markeredgecolor=SLOT[1],
+            markeredgewidth=2.5, zorder=4,
+            label=f"best: {pts[best][1]} ranks x {best} thr")
+
+    ax.set_yscale("log", base=2)
+    ax.set_xticks(pos)
+    ax.set_xticklabels(["{}\n{} ranks".format(t, pts[t][1]) for t in xs])
+    ax.set_xlim(-0.4, len(xs) - 0.6)
+    # Headroom above the ideal line so the legend never sits on the data.
+    ax.set_ylim(min(speedup) * 0.75, workers * 2.2)
+    ax.minorticks_off()
+    ax.set_xlabel("threads per rank")
+    ax.set_ylabel("speedup  $t_1/t_p$")
+    ax.set_title(f"STFT: rank / thread split at {workers} fixed cores",
+                 loc="left", pad=14)
+    ax.legend(loc="upper left", framealpha=0.95)
+
+    param_box(fig, [("machine", machine), ("statistic", stat[:-3]),
                     ("frame / hop", f"{FRAME} / {HOP}"),
+                    ("sample rate", f"{RATE / 1000:g} kHz"),
+                    ("cores", workers),
                     ("", ""),
-                    ("note", "the audio grows"),
-                    ("", "with the rank"),
-                    ("", "count, so each"),
-                    ("", "rank always does"),
-                    ("", "the same work"),
-                    ("", ""),
-                    ("", "a flat line means"),
-                    ("", "perfect weak"),
-                    ("", "scaling; the slope"),
-                    ("", "is communication")])
+                    ("note", "every point uses"),
+                    ("", "the same cores,"),
+                    ("", "split differently")])
     finish(fig, out)
 
 
@@ -651,13 +749,13 @@ def main() -> int:
                          "that overlap near the origin (default: speedup)")
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
-                         "stft_hybrid, memory, weak, granularity")
+                         "stft_hybrid, memory, granularity, hybrid_split")
     args = ap.parse_args()
 
     stat = f"{args.stat}_ms"
     wanted = ({w.strip() for w in args.only.split(",")} if args.only else
               {"fft_algorithms", "stft_openmp", "stft_mpi", "stft_hybrid",
-               "memory", "weak", "granularity"})
+               "memory", "granularity", "hybrid_split"})
 
     timings = load(args.csv / "timings.csv")
     memory = load(args.csv / "memory.csv")
@@ -685,8 +783,9 @@ def main() -> int:
                      "hybrid", args.metric)
         if "memory" in wanted:
             fig_memory(memory, m, args.out / f"{m}_5_memory")
-        if "weak" in wanted:
-            fig_weak(timings, m, stat, args.out / f"{m}_6_weak_scaling")
+        if "hybrid_split" in wanted:
+            fig_hybrid_split(timings, m, stat,
+                             args.out / f"{m}_9_hybrid_split")
         if "granularity" in wanted:
             fig_granularity(timings, m, stat,
                             args.out / f"{m}_7_granularity")
