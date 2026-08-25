@@ -36,7 +36,15 @@ Figure 4 keeps two OpenMP threads on every rank, so its ideal line is 2 x ranks,
 not ranks: with a fixed thread count the honest reference has to count the
 threads too, otherwise the measured curve would sail past "ideal" by design.
 
-Flags: --machine NAME (repeatable) · --stat min|median|mean · --only a,b
+── Repetitions ─────────────────────────────────────────────────────────────
+Every point is a MEAN, twice over: the benchmark suite already averages the
+timed reps of one launch into `mean_ms` (the column `--stat mean`, the default,
+reads), and where a configuration was launched more than once these figures
+average those launches too. Neither reduction keeps a best-of, so a single
+lucky launch cannot become the published number. `--stat min|median` switches
+the first reduction only.
+
+Flags: --machine NAME (repeatable) · --stat mean|median|min · --only a,b
 
 Writes one PNG per figure. Requires matplotlib only — no pandas, so it runs
 in the course container.
@@ -118,6 +126,18 @@ def load(path: Path) -> list[dict]:
     return rows
 
 
+def average(values) -> float:
+    """Mean of repeated measurements of the same configuration.
+
+    Used wherever the same point was measured more than once — the same
+    configuration appearing twice in a sweep, or a sweep repeated. The mean is
+    reported rather than the fastest of them for the same reason `--stat mean`
+    is the default: a best-of reports the luckiest run, and the run-to-run
+    spread on this machine is several percent.
+    """
+    return sum(values) / len(values)
+
+
 def seconds_of(frames: int) -> float:
     """Frames back to the audio duration that produced them."""
     return ((frames - 1) * HOP + FRAME) / RATE
@@ -134,9 +154,13 @@ def curves_by_size(rows, machine, stat, section, keep, worker_of, source=None):
     `source` restricts the rows to one sweep file. Without it the plain
     benchmark section and the rank sweep both contribute "MPI pure" rows at the
     same workload, and the figure would silently mix two different experiments.
+
+    Rows that land on the same (workload, workers) point are averaged, not
+    reduced to the fastest: see `average`.
     """
-    data: dict[int, dict[int, float]] = defaultdict(dict)
-    serial: dict[int, float] = {}
+    samples: dict[int, dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list))
+    serial_samples: dict[int, list[float]] = defaultdict(list)
     for r in rows:
         if r["machine"] != machine or r["section"] != section:
             continue
@@ -144,16 +168,17 @@ def curves_by_size(rows, machine, stat, section, keep, worker_of, source=None):
             continue
         v, frames, t = r["variant"], r["frames"], r[stat]
         if v.startswith("serial") or "1 thread" in v:
-            if frames not in serial or t < serial[frames]:
-                serial[frames] = t
+            serial_samples[frames].append(t)
             continue
         if not keep(r):
             continue
         w = worker_of(r)
         if not w:
             continue
-        prev = data[frames].get(w)
-        data[frames][w] = t if prev is None else min(prev, t)
+        samples[frames][w].append(t)
+    data = {frames: {w: average(ts) for w, ts in per_worker.items()}
+            for frames, per_worker in samples.items()}
+    serial = {frames: average(ts) for frames, ts in serial_samples.items()}
     return data, serial
 
 
@@ -290,7 +315,8 @@ def fig_fft(rows, machine, stat, out):
     Uses the largest transform size measured, since that is where threading
     has the most work to hide its own overhead behind.
     """
-    per_algo: dict[str, dict[int, float]] = defaultdict(dict)
+    samples: dict[str, dict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(list))
     sizes = {r["size"] for r in rows
              if r["machine"] == machine and r["section"] == "fft"
              and r.get("source") == "scaling_threads"}
@@ -303,9 +329,9 @@ def fig_fft(rows, machine, stat, out):
                 or r.get("source") != "scaling_threads"
                 or r["size"] != biggest or not r.get("omp_threads")):
             continue
-        t = r["omp_threads"]
-        prev = per_algo[r["variant"]].get(t)
-        per_algo[r["variant"]][t] = r[stat] if prev is None else min(prev, r[stat])
+        samples[r["variant"]][r["omp_threads"]].append(r[stat])
+    per_algo = {variant: {t: average(ts) for t, ts in per_threads.items()}
+                for variant, per_threads in samples.items()}
 
     params = [("machine", machine),
               ("statistic", stat[:-3]),
@@ -568,26 +594,32 @@ def fig_split_scaling(rows, mem, machine, stat, out, strategies=("scatter",)):
 
     # Walk the timings in file order, closing a launch at each hybrid row, and
     # take the strategies from the memory sequence in the same order.
-    launches, serial = [], None
+    launches, serial_samples = [], []
     for r in timings:
         v = r.get("variant", "")
         if v.startswith("serial") and r.get(stat):
-            serial = float(r[stat]) if serial is None else max(serial,
-                                                               float(r[stat]))
+            serial_samples.append(float(r[stat]))
         elif v.startswith("hybrid") and r.get(stat) and r.get("ranks"):
             launches.append((int(r["ranks"]), int(r["threads"] or 0),
                              float(r[stat])))
+    serial = average(serial_samples) if serial_samples else None
     if not serial or len(launches) != len(order):
         print(f"  skip {out.name}: {len(launches)} timings against "
               f"{len(order)} memory rows — cannot pair them")
         return
 
-    series = defaultdict(dict)
+    # One launch per (strategy, cores), so a repeated key is a repeated launch:
+    # averaged, like every other point in this file.
+    samples = defaultdict(lambda: defaultdict(list))
+    ranks_at: dict[str, dict[int, int]] = defaultdict(dict)
     for (ranks, threads, ms), m in zip(launches, order):
         name = "broadcast" if m["strategy"] == "bcast" else "scatter"
         cores = ranks * threads
-        if cores not in series[name] or ms < series[name][cores][0]:
-            series[name][cores] = (ms, ranks)
+        samples[name][cores].append(ms)
+        ranks_at[name][cores] = ranks
+    series = {name: {c: (average(ts), ranks_at[name][c])
+                     for c, ts in per_cores.items()}
+              for name, per_cores in samples.items()}
     if not series:
         print(f"  skip {out.name}: no launches to draw")
         return
@@ -687,7 +719,9 @@ def fig_hybrid_split(rows, machine, stat, out):
     attached to the other socket. If the curve turns between those two marks,
     the turn is NUMA, not MPI.
     """
-    pts, serial = {}, None
+    samples: dict[int, list[float]] = defaultdict(list)
+    ranks_at: dict[int, int] = {}
+    serial_samples: list[float] = []
     for r in rows:
         if r["machine"] != machine or r.get("source") != HYBRID_SPLIT_SOURCE:
             continue
@@ -695,13 +729,17 @@ def fig_hybrid_split(rows, machine, stat, out):
             continue
         variant, t = r.get("variant", ""), float(r[stat])
         if variant.startswith("serial"):
-            serial = t if serial is None else min(serial, t)
+            serial_samples.append(t)
         elif variant.startswith("hybrid") and r.get("ranks") and r.get("threads"):
             threads, ranks = int(r["threads"]), int(r["ranks"])
             # One launch per split, so a repeated key means a repeated point:
-            # keep the faster, matching the "min" convention of the other rows.
-            if threads not in pts or t < pts[threads][0]:
-                pts[threads] = (t, ranks)
+            # average them, matching the "mean" convention of the other rows.
+            samples[threads].append(t)
+            ranks_at[threads] = ranks
+
+    pts = {threads: (average(ts), ranks_at[threads])
+           for threads, ts in samples.items()}
+    serial = average(serial_samples) if serial_samples else None
 
     if len(pts) < 2 or not serial:
         print(f"  skip {out.name}: need a serial baseline and two splits")
@@ -833,8 +871,8 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
     COLORS = {"OpenMP frames": ALGO_COLOR["IterativeFFT"],
               "sequential frames": ALGO_COLOR["ParallelFFT"]}
 
-    curves = defaultdict(dict)      # short key -> {seconds: time}
-    serial = {}                     # seconds -> serial time
+    samples = defaultdict(lambda: defaultdict(list))  # key -> {seconds: [time]}
+    serial_samples = defaultdict(list)                # seconds -> [serial time]
     workers = None                  # the budget the ideal line stands for
     for r in rows:
         if r["machine"] != machine or r.get("source") != source:
@@ -843,14 +881,17 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
         if sec is None:
             continue
         if r["section"] == base_section and serial_mark in r["variant"]:
-            serial[sec] = min(serial.get(sec, r[stat]), r[stat])
+            serial_samples[sec].append(r[stat])
         elif r["section"] == section:
             key = next((k for k in LABELS if r["variant"].startswith(k)), None)
             if key is None:
                 continue
-            prev = curves[key].get(sec)
-            curves[key][sec] = r[stat] if prev is None else min(prev, r[stat])
+            samples[key][sec].append(r[stat])
             workers = (r.get("ranks") or 1) * (r.get("threads") or 1)
+
+    curves = {key: {sec: average(ts) for sec, ts in per_sec.items()}
+              for key, per_sec in samples.items()}
+    serial = {sec: average(ts) for sec, ts in serial_samples.items()}
 
     if len(curves) < 2 or not serial:
         print(f"  skip {out.name}: need both strategies and a serial baseline "
@@ -926,7 +967,9 @@ def main() -> int:
     ap.add_argument("--csv", type=Path, default=Path("results/results_analysis/csv"))
     ap.add_argument("--out", type=Path, default=Path("results/results_analysis/figures"))
     ap.add_argument("--machine", action="append", default=None)
-    ap.add_argument("--stat", default="min", choices=["min", "median", "mean"])
+    # mean by default: every published point is an average over the launch's
+    # repetitions, never the luckiest of them.
+    ap.add_argument("--stat", default="mean", choices=["mean", "median", "min"])
     ap.add_argument("--metric", default="speedup",
                     choices=["speedup", "efficiency"],
                     help="what the scaling figures plot. speedup is the usual "
