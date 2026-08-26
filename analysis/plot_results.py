@@ -232,7 +232,7 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
 
     if with_time:
         fig, (ax_t, ax_s) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
-                                         gridspec_kw={"hspace": 0.15})
+                                         gridspec_kw={"hspace": 0.42})
     else:
         fig, ax_s = plt.subplots(figsize=(11.0, 5.6))
         ax_t = None
@@ -273,6 +273,10 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
         ax.set_xscale("log", base=2)
         ax.set_xticks(xs)
         ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+        # sharex=True hides tick labels on every panel but the bottom one by
+        # default; repeated here because each panel is meant to be readable
+        # cropped out of the figure on its own, not only alongside the other.
+        ax.tick_params(axis="x", labelbottom=True)
     if metric == "efficiency":
         # Linear, and anchored at 1: efficiency lives in [0, 1] and a log axis
         # would compress exactly the range the reader is looking at.
@@ -284,6 +288,8 @@ def scaling_figure(series, baselines, title, params, xlabel, out,
         ax_s.get_yaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
         ax_s.set_ylabel("speedup   $t_1 / t_p$")
     ax_s.set_xlabel(xlabel)
+    if ax_t is not None:
+        ax_t.set_xlabel(xlabel)
     # Efficiency curves start high on the left and fall away, so the bottom-left
     # is the free corner; speedup curves do the opposite.
     ax_s.legend(loc="lower left" if metric == "efficiency" else "upper left")
@@ -475,7 +481,7 @@ def fig_memory(mem, machine, out, source=None, context=None):
     style()
     if have_analytic:
         fig, (ax_a, ax) = plt.subplots(2, 1, figsize=(11.0, 8.4), sharex=True,
-                                       gridspec_kw={"hspace": 0.18})
+                                       gridspec_kw={"hspace": 0.42})
     else:
         fig, ax = plt.subplots(figsize=(11.0, 5.6))
         ax_a = None
@@ -514,6 +520,13 @@ def fig_memory(mem, machine, out, source=None, context=None):
         ax_a.text(0.985, 0.30, f"{ratio:.0f}x less at {best} ranks",
                   transform=ax_a.transAxes, fontsize=11.5, color=INK_SOFT,
                   ha="right", va="center")
+        # sharex=True hides tick labels on every panel but the bottom one by
+        # default; restored here, with the same rank labels as the panel
+        # below, so this panel is readable cropped out on its own.
+        ax_a.set_xticks(list(xs))
+        ax_a.set_xticklabels([str(p) for p in ranks])
+        ax_a.tick_params(axis="x", labelbottom=True)
+        ax_a.set_xlabel("MPI ranks")
 
     for strategy, offset, name in (("bcast", -width / 2, "broadcast"),
                                    ("scatter", width / 2, "scatter")):
