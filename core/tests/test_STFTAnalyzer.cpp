@@ -300,9 +300,9 @@ TEST(STFTAnalyzerTemplateTest, WorksWithHammingWindow) {
 //
 // Frames and Transform spend the same thread budget in different places (see
 // the "Parallelism strategy" note in STFTAnalyzer.hpp); neither should change
-// the answer. Nothing below exercised this before the Parallelism enum, the
-// FFTFactory constructor and the prototype constructor were added, so a
-// mistake in any of the three had nothing catching it.
+// the answer. The Parallelism enum, the FFTFactory constructor and the
+// prototype constructor are exercised nowhere else, so a mistake in any of
+// the three would go uncaught.
 
 namespace {
 

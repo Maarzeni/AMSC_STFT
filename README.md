@@ -6,25 +6,15 @@ AMSC_STFT is a C++ library for spectral analysis of audio signals, built around 
 
 ---
 
-## What the library computes
+## The mathematical problem
 
-The Discrete Fourier Transform tells you *which* frequencies a signal contains, but not *when* they occur — a limitation that makes it unusable for audio, whose spectral content changes continuously. The Short-Time Fourier Transform removes it by applying the DFT locally: the signal is split into short overlapping frames, each frame is multiplied by a window function that suppresses spectral leakage, and a DFT is computed on the result.
+The **Short-Time Fourier Transform (STFT)** describes how the frequency content of an audio signal changes over time. The signal is split into short overlapping frames; each frame is multiplied by a window function $w[n]$ that tapers smoothly to zero at its edges, and a **Discrete Fourier Transform (DFT)** is computed on the result. The DFT decomposes a length-$L$ frame into $L$ frequency components; for efficiency it is evaluated with the **Fast Fourier Transform (FFT)**, which lowers the cost from $O(L^2)$ to $O(L\log L)$.
 
 $$X[m, k] = \sum_{n=0}^{L-1} x[n + mH] \cdot w[n] \cdot e^{-i 2\pi k n / L}$$
 
-Here $L$ is the frame length, $H$ the hop size (the shift between consecutive frames, hence their overlap), $w[n]$ the window and $m$ the frame index. The output is a time-frequency matrix — one row per instant, one column per frequency band — whose magnitudes are exported as a spectrogram image.
+Here $L$ is the frame length, $H$ the **hop size** (the shift between consecutive frames, hence their overlap), $w[n]$ the window and $m$ the frame index. The output is a time–frequency matrix — row $m$ an instant in time, column $k$ a frequency band — and $|X[m,k]|$ is the strength of that frequency at that instant, exported as the brightness of a pixel in the spectrogram.
 
-Two parameters control the analysis, and they do very different things.
-
-**The frame length $L$ sets both resolutions at once, in opposite directions.** A frame lasts $L/f_s$ seconds, and the STFT produces a single spectrum for the whole frame — so anything that happens inside it cannot be located more precisely than that. At the same time, the DFT of $L$ points produces bins that are $f_s/L$ Hz apart, and two tones closer than that fall into the same bin. Since $L$ sits on top in one formula and underneath in the other, their product is always 1: you cannot improve both. Choosing $L$ only decides how the fixed budget is split between time and frequency.
-
-| $L$ | Time resolution | Frequency resolution |
-|---|---|---|
-| 256 | 5.8 ms | 172 Hz |
-| 1024 (default) | 23.2 ms | 43.1 Hz |
-| 4096 | 92.9 ms | 10.8 Hz |
-
-**The hop size $H$ changes neither.** A smaller hop does not make the frames shorter — it just takes more of them, overlapping. What $H$ controls is coverage and cost. With $H = L$ the frames only touch, and the window fades out whatever falls near their edges; with $H = L/2$ (the default) every instant lands inside some frame. The price is linear: since the frame count is $M = 1 + \lfloor (N - L)/H \rfloor$, halving the hop doubles the number of frames, the number of FFTs to compute, and the size of the output matrix.
+The frame length $L$ fixes both resolutions at once and in opposite directions: a frame spans $\Delta t = L/f_s$ seconds and its bins are $\Delta f = f_s/L$ Hz apart, so $\Delta t \cdot \Delta f = 1$ for any $L$. The window limits **spectral leakage**, the smearing of a frequency's energy into neighbouring bins caused by cutting a frame out. Each window is characterised by its **coherent gain** (the mean of its coefficients, used to normalise the magnitude) and its **equivalent noise bandwidth (ENBW)**, its effective width in frequency bins.
 
 ### Three things to know before running it
 
@@ -32,7 +22,7 @@ Two parameters control the analysis, and they do very different things.
 
 - **Three windows are available**, selected with the fourth command-line argument: `hann` (the default, a good general-purpose choice), `hamming` (narrower main lobe, suited to speech), `blackman` (lowest sidelobes, for precision spectral analysis).
 
-- **The output has `frameSize / 2 + 1` columns, not `frameSize`.** The input is real, so the upper half of the spectrum is redundant and is not stored. The retained bins run from DC to Nyquist, and bin $k$ sits at frequency $k \cdot f_s / L$ — use `SpectrogramData::binFrequency(k)` rather than computing it by hand. Magnitudes are normalised by $L \cdot \text{coherentGain}(w)$, so values are comparable across frame sizes and window choices.
+- **The output has `frameSize / 2 + 1` columns, not `frameSize`.** The input is real, so the upper half of the spectrum is redundant and is not stored. The retained bins run from constant componenta at 0 Hz to Nyquist (the maximum reprensentable frequency: $f_s/2$), and bin $k$ sits at frequency $k \cdot f_s / L$. Magnitudes are normalised by $L \cdot \text{coherentGain}(w)$, so values are comparable across frame sizes and window choices.
 
 > Section 1 of the project report covers the reasoning behind all of this: the time-frequency uncertainty relation, where spectral leakage comes from, how the three windows trade off against each other, why half the spectrum suffices, and how the normalisation is derived.
 
@@ -53,23 +43,57 @@ Two parameters control the analysis, and they do very different things.
 
 ## Repository Layout
 
-- `core/` — the library. `include/` and `src/` mirror each other by topic
-  (`fft/`, `window/`, `stft/`, `mpi/`, `audio/`, `output/`); `tests/` is one
-  GoogleTest file per header; `benchmarks/` is the timing suite; `examples/`
-  holds the two demo pipelines and the WAV fixtures they analyse.
-- `scripts/` — runs the project: `run_suite.sh` is the one recipe every
-  environment uses, and `job.sh` is the small SLURM entry point the CI/CD
-  pipeline submits (no account ID — see its header). The scripts that ran the
-  full measurement sweep on our own cluster accounts are local and not tracked
-  — see [Where we ran it](#where-we-ran-it).
-- `analysis/` — reads the results: `parse_results.py` tags and merges the raw
-  CSVs (standard library only), `plot_results.py` turns them into figures.
-- `results/` — everything a run writes. Not tracked in git; see
-  [Benchmarks](#benchmarks) for what lands where.
-- `docs/doxygen/` — generated API documentation (see below). Not tracked.
-- `system-deps.txt`, `Singularity.def` — the apt package list and the
-  container definition used for HPC deployment.
-- `.github/workflows/` — the CI pipeline.
+The repository is organised into four main areas: the C++ library, the scripts
+used to run it, the tools used to analyse the results, and the files generated
+during experiments. This separation keeps the source code independent from the
+execution environment and from the benchmark analysis. The main structure of the
+repository is shown below.
+
+**Top level**
+
+```text
+AMSC_STFT/
+|
+|-- core/            <- C++ library
+|   |-- include/     <- audio, fft, window, mpi, stft, output
+|   |-- src/         <- implementations
+|   |-- tests/       <- automated tests
+|   |-- benchmarks/  <- performance suite
+|   +-- examples/    <- demo programs
+|
+|-- scripts/         <- run_suite.sh, SLURM job
+|-- analysis/        <- Python parsing and plotting
+|-- .github/         <- CI pipeline
+|-- Singularity.def  <- HPC container
++-- results/         <- generated output (not in git)
+```
+
+**Library headers** — `core/include/`
+
+```text
+include/
+|-- audio/
+|   |-- AudioFile.h
+|   +-- WavReader.hpp
+|-- fft/
+|   |-- BaseFFT.hpp
+|   |-- IterativeFFT.hpp
+|   |-- RecursiveFFT.hpp
+|   +-- ParallelFFT.hpp
+|-- window/
+|   |-- BaseWindow.hpp
+|   |-- HannWindow.hpp
+|   |-- HammingWindow.hpp
+|   +-- BlackmanWindow.hpp
+|-- mpi/
+|   +-- MPIContext.hpp
+|-- stft/
+|   |-- STFTAnalyzer.hpp
+|   |-- MPI_STFTAnalyzer.hpp
+|   +-- SpectrogramData.hpp
++-- output/
+    +-- ImageExporter.hpp
+```
 
 ## Getting Started
 
@@ -89,7 +113,7 @@ Install the Debian/Ubuntu packages listed in `system-deps.txt`:
 cat system-deps.txt | grep -v '^#' | xargs sudo apt-get install -y
 ```
 
-CMake checks the compiler version itself and stops with a readable message if it is too old for C++20, rather than failing deep inside a standard header. The first `cmake` also needs the network access noted in the table above: GoogleTest is not an apt package, it is fetched from GitHub the first time the project is configured.
+CMake checks the compiler version itself and stops with a readable message if it is too old for C++20. The first `cmake` also needs the network access noted in the table above: GoogleTest is not an apt package, it is fetched from GitHub the first time the project is configured.
 
 Optional: `doxygen` and, for its dependency graphs, Graphviz's `dot` — needed only for [the API documentation](#optional-the-api-documentation) below (`sudo apt install doxygen graphviz`).
 
@@ -101,7 +125,7 @@ From the root of the repository:
 cd core
 mkdir build && cd build
 cmake ..
-make -j
+make
 ```
 
 ### What gets built
@@ -172,7 +196,7 @@ results/results_examples/
 └── test_audio_hann_f1024_h512_mpi4.png      ← the same analysis, from mpi_main on 4 ranks
 ```
 
-The name carries the parameters — `<input>_<window>_f<frameSize>_h<hopSize>_<serial|mpi P>` — so runs with different settings accumulate side by side instead of overwriting each other, and the serial and distributed results of the same analysis sit next to each other for comparison.
+The name carries the parameters — `<input>_<window>_f<frameSize>_h<hopSize>_<serial|mpi P>` — so runs with different settings accumulate side by side, and the serial and distributed results of the same analysis sit next to each other for comparison.
 
 Everything else is printed to the terminal: sample rate, duration, frame and hop, window, the frame and bin counts, the time and frequency resolutions they imply, the dominant frequency of the middle frame and the wall time of the analysis.
 
@@ -205,8 +229,6 @@ OMP_NUM_THREADS=4 mpirun -np 2 ./examples/mpi_main test_audio.wav 2048 512 hammi
 ```
 
 Add `--oversubscribe` if you ask for more ranks than the machine has cores.
-
-Running the two on the same input is the quickest end-to-end check that the distributed path is correct: the frame count, the bin count and the dominant frequency the two print must match, and the two PNGs are identical files.
 
 ---
 
@@ -243,9 +265,7 @@ Keep `-j` times `OMP_NUM_THREADS` within the available cores: `ctest -j4` with `
 
 ## Benchmarks
 
-The `benchmarks/` directory measures the execution time of the FFT engines and of the STFT under each parallelisation strategy. There are two executables — one for the shared-memory side, one for the distributed side — and a script that runs both in a fixed configuration and writes the results to disk.
-
-Both executables write CSV rows to stdout: one row per measurement, no other output, meant for `analysis/parse_results.py` rather than for reading directly. The column schema is documented in `benchmarks/benchmark_Suite.hpp`.
+The `benchmarks/` directory measures the execution time of the FFT engines and of the STFT under each parallelisation strategy. There are two executables — one for the shared-memory side, one for the distributed side.
 
 ### Serial / OpenMP benchmarks
 
@@ -253,7 +273,7 @@ Three comparisons, all against the same serial baseline:
 
 - **FFT engines** — `RecursiveFFT`, `IterativeFFT`, `ParallelFFT` on a single transform of increasing size.
 - **STFT, serial vs OpenMP** — `STFTAnalyzer<IterativeFFT, HannWindow>` with one thread against all available threads; the OpenMP parallelism is the frame loop.
-- **Parallelism granularity** — the same thread budget spent two ways: across frames (the OpenMP row above) versus inside each frame's transform (a sequential frame loop calling `ParallelFFT`). `STFTAnalyzer<ParallelFFT, ...>` is not used for the second row: its frame loop and `ParallelFFT`'s own OpenMP region would read the same thread count, so nesting them cannot keep one serial while the other stays parallel (see the note in `STFTAnalyzer.hpp`).
+- **Parallelism granularity** — the same thread budget spent two ways: across frames (Parallelism::Frames with IterativeFFT) versus inside each frame's transform (Parallelism::Transform with ParallelFFT).
 
 ```
 ./benchmarks/benchmark_Main [reps=7] [warmup=2] [frame=1024] [hop=frame/2] [seconds]
@@ -288,7 +308,7 @@ Vary `-np` across runs to read the strong-scaling behaviour. The memory figure i
 
 ### The full benchmark suite
 
-`scripts/run_suite.sh` is the single entry point that produces every result file: the test run, both benchmark executables, the memory comparison, and the strong-, thread- and weak-scaling sweeps. The CI, the SLURM job and a person at a terminal all call it, so their numbers are comparable by construction. Run it from the repository root:
+`scripts/run_suite.sh` is the single entry point that produces every result file. The CI, the SLURM job and a person at a terminal all call it, so their numbers are comparable by construction. Run it from the repository root:
 
 ```bash
 bash scripts/run_suite.sh                                    # against the build above
@@ -323,17 +343,6 @@ python3 analysis/plot_results.py
 ```
 
 `parse_results.py` reads `results/results_benchmark/` by default; pass one or more directories explicitly when several machines' output has been collected side by side elsewhere. It tags every row with its machine and which sweep produced it, and writes `timings.csv` and `memory.csv`. It needs nothing but the standard library, so it can run on a cluster where installing packages is not possible. `plot_results.py` needs matplotlib and writes one PNG per figure.
-
-### Where we ran it
-
-The suite was run on two HPC systems, each through a thin `sbatch`/`qsub` wrapper around `run_suite.sh`:
-
-| System | Scheduler | Configuration |
-|---|---|---|
-| **Galileo100** (CINECA) | SLURM (`sbatch`) | inside the Singularity image built by the CI, on the `g100_usr_prod` partition |
-| **MOX** (MOX laboratory, Politecnico di Milano) | PBS (`qsub`) | native build with `gcc@15.2.0` and `openmpi@5.0.8`, up to 28 cores on the `cpu` queue |
-
-The full-sweep wrapper used for each is not tracked in this repository — it carries personal account and path details for that cluster — but does nothing beyond setting up the environment and calling `run_suite.sh`, which is. (`scripts/job.sh`, which *is* tracked, is a different, smaller thing: the account-free smoke test the CI/CD pipeline submits, not the run that produced these measurements.) Running Galileo100 through the container means the timed binaries are exactly the ones the pipeline ships, and the MOX job reuses the same `run_suite.sh` with a wider sweep, so the two machines produce directly comparable files. The measurements from both, and the discussion of what they show about the shared-memory, distributed and hybrid strategies, are in the project report included in this repository.
 
 ---
 

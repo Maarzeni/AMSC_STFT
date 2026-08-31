@@ -21,13 +21,6 @@
  * (MPI_Reduce with MPI_MAX), since that is what bounds the collective.
  * Only the root rank writes rows.
  *
- * A fourth row pair (section "mpi_granularity") answers, for the distributed
- * case, the question benchmark_Main asks for the shared-memory one: given the
- * SAME ranks and the SAME threads per rank, is a rank better off spending its
- * threads across its own frames or inside each transform?  MPI splits the
- * frames either way; only the intra-rank level changes, so the two rows differ
- * in one variable and share the serial baseline of the rows above.
- *
  * Two more row kinds report the per-rank memory footprint (see Distribution
  * in MPI_STFTAnalyzer.hpp), which is what the broadcast-vs-scatter change is
  * actually about:
@@ -78,7 +71,6 @@
 #include "stft/MPI_STFTAnalyzer.hpp"
 #include "stft/STFTAnalyzer.hpp"
 #include "fft/IterativeFFT.hpp"
-#include "fft/ParallelFFT.hpp"
 #include "window/HannWindow.hpp"
 
 #include <mpi.h>
@@ -305,35 +297,6 @@ int main(int argc, char** argv) {
     // setThreads(1) the real per-rank core count is no longer readable.
     const int nThreads = maxThreads();
 
-    // Same ranks, same distribution, same threads per rank — spent inside each
-    // transform instead of across the rank's own frames. Declared here rather
-    // than beside `analyzer` because the factory has to capture nThreads by
-    // value: ParallelFFT would otherwise read the ambient count when built,
-    // and the setThreads(1) below would collapse it to serial along with the
-    // frame loop instead of leaving it parallel independently of it.
-    // The same two ceilings benchmark_Main applies to its own granularity pair,
-    // and for the same reason: ParallelFFT splits ONE 1024-point transform over
-    // its threads, and past a handful of them the synchronisation costs more
-    // than the transform — measured at 17.8x slower than IterativeFFT on 16
-    // threads. Under a rank/thread sweep that reaches 24 or 48 threads per rank
-    // the arm stops being a measurement and becomes the longest thing in the
-    // job, which is how a rehearsal on MOX ran for four hours.
-    //
-    // Until now these variables were read only by benchmark_Main, so a caller
-    // that set AMSC_SKIP_GRANULARITY was silently obeyed in one binary and
-    // ignored in the other.
-    const bool withGranularity = std::getenv("AMSC_SKIP_GRANULARITY") == nullptr;
-    const int granThreads = [nThreads] {
-        const char* env = std::getenv("AMSC_GRANULARITY_THREADS");
-        const int wanted = env ? std::atoi(env) : 8;
-        return std::max(1, std::min(nThreads, wanted));
-    }();
-
-    MPI_STFTAnalyzer<ParallelFFT, HannWindow> transformAnalyzer(
-        ctx, frame, hop, SR,
-        [n = static_cast<std::size_t>(granThreads)] { return ParallelFFT(n); },
-        Parallelism::Transform, dist);
-
     if (ctx.isRoot()) bench::writeHeader(std::cout);
 
     // ─── Distributed STFT: serial / MPI pure / hybrid ──────────────────────
@@ -394,40 +357,6 @@ int main(int argc, char** argv) {
                                "hybrid (" + std::to_string(nThreads) + " thr/rank)",
                                ctx.size(), nThreads, nThreads, std::nullopt,
                                static_cast<long long>(frames), sec, sHybrid, sSerial.mean);
-
-        // ── Granularity: where a rank spends its own threads ───────────────
-        // sHybrid above already is the "across frames" arm — the analyzer's
-        // default — so only the "inside the transform" arm is measured here,
-        // and both are written as a pair against the same serial baseline.
-        // setThreads() does not reach this one: under Parallelism::Transform
-        // the frame loop has no OpenMP region and the engine's thread count
-        // was fixed when the factory captured it.
-        if (withGranularity) {
-        const bench::Stats sTransform =
-            measureMPI(ctx, warmup, reps, [&] {
-                const SpectrogramData out = transformAnalyzer.analyze(signal);
-                bench::doNotOptimize(out);
-            });
-        if (ctx.isRoot()) {
-            bench::writeTiming(std::cout, "mpi_granularity",
-                               "OpenMP frames + IterativeFFT (" +
-                                   std::to_string(nThreads) + " thr/rank)",
-                               ctx.size(), nThreads, nThreads, std::nullopt,
-                               static_cast<long long>(frames), sec, sHybrid,
-                               sSerial.mean);
-            // granThreads, not nThreads: when the ceiling bites, this arm ran
-            // with fewer threads than the one above it and the label has to say
-            // so — otherwise the pair reads as a like-for-like comparison that
-            // it no longer is. Set AMSC_GRANULARITY_THREADS at or above the
-            // sweep's thread count to keep the two arms comparable.
-            bench::writeTiming(std::cout, "mpi_granularity",
-                               "sequential frames + ParallelFFT (" +
-                                   std::to_string(granThreads) + " thr/rank)",
-                               ctx.size(), granThreads, granThreads, std::nullopt,
-                               static_cast<long long>(frames), sec, sTransform,
-                               sSerial.mean);
-        }
-        }
     }
 
     // ─── Phase split: where the wall-clock time actually goes ──────────────

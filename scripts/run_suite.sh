@@ -27,12 +27,12 @@
 # together; keep it in sync with plot_results.py's own `_SOURCE` constants and
 # `main()` if either side changes.
 #
-#   section 2 (serial/OpenMP)    -> figures 1 (fft), 7 (granularity)
+#   section 2 (serial/OpenMP)    -> figures 1 (fft), 6 (granularity)
 #   section 3 (thread scaling)   -> figure  2 (stft, OpenMP)
 #   section 4 (memory, paired)   -> figure  5 (memory)
 #   section 5 (strong scaling)   -> figures 3, 4 (stft, MPI / hybrid)
-#   section 6 (hybrid split)     -> figure  9 (hybrid_split)
-#   section 7 (hybrid scaling)   -> figures 10, 11 (hybrid_scaling, memory_hybrid)
+#   section 6 (hybrid split)     -> figure  7 (hybrid_split)
+#   section 7 (hybrid scaling)   -> figures 8, 9 (hybrid_scaling, memory_hybrid)
 #
 # ─── Knobs (all optional, all environment variables) ────────────────────────
 #
@@ -48,7 +48,8 @@
 #   BENCH_ARGS   "reps warmup frame hop".   default "7 2 1024 512"
 #
 #   MPI_LAUNCHER   how to start MPI ranks, up to and including the flag that
-#                  takes their number. Default "mpirun --bind-to none -np".
+#                  takes their number. Default "mpirun -np"; the binding
+#                  policy is added per launch by bind_flags() below.
 #                  Multi-node runs under SLURM want "srun --mpi=pmix -n"
 #                  instead: the batch scheduler, not mpirun, is what knows how
 #                  to place ranks on nodes other than this one.
@@ -341,9 +342,9 @@ SHARED_MEM_THREADS=${TOTAL_CORES}
 [ "${SHARED_MEM_THREADS}" -gt "${NODE_CORES}" ] && SHARED_MEM_THREADS=${NODE_CORES}
 
 # ── Process binding ─────────────────────────────────────────────────────────
-# Until now every launch ran with --bind-to none, which lets the OS move ranks
-# and their OpenMP threads across cores freely. Two things follow on a machine
-# like a 2-socket compute node, and the second is the expensive one:
+# Unbound, the OS moves ranks and their OpenMP threads across cores freely.
+# Two things follow on a machine like a 2-socket compute node, and the second
+# is the expensive one:
 #
 #   NUMA. Linux places a page on the memory of the socket that first touches
 #   it. A rank that migrates afterwards reads its own data across the socket
@@ -364,9 +365,9 @@ SHARED_MEM_THREADS=${TOTAL_CORES}
 #   - not when mpirun is not the launcher (srun binds by its own rules);
 #   - not when the probe below says this mpirun does not understand PE=;
 #   - not when P x T exceeds the cores available, where binding would either be
-#     refused outright or pin several ranks onto one core. That case still runs
-#     unbound, exactly as before — the unit tests launch np=1..4 regardless of
-#     machine size and must keep working on a 2-core laptop.
+#     refused outright or pin several ranks onto one core. That case runs
+#     unbound — the unit tests launch np=1..4 regardless of machine size and
+#     must keep working on a 2-core laptop.
 BIND_PROBE_OK=0
 case "${MPI_LAUNCHER}" in
     *--bind-to*) BIND_USER_POLICY=1 ;;
@@ -512,7 +513,7 @@ if [ "${TESTS_ONLY:-0}" = "1" ]; then
 fi
 
 # ── Section 2: serial / OpenMP benchmark ────────────────────────────────────
-# Feeds figure 1 (FFT engines) and figure 7 (granularity). Grouped next to
+# Feeds figure 1 (FFT engines) and figure 6 (granularity). Grouped next to
 # section 3 because both are single-node, no-MPI questions.
 echo ""
 echo "============== [2/7] Benchmark: serial / OpenMP =========================="
@@ -675,7 +676,7 @@ if [ "${SCALING:-1}" != "0" ]; then
 fi
 
 # ── Section 6: how to split a fixed machine between ranks and threads ───────
-# Feeds figure 9 (hybrid_split). Every other sweep varies the amount of
+# Feeds figure 7 (hybrid_split). Every other sweep varies the amount of
 # hardware. This one holds it fixed at AVAILABLE_CORES and varies only how it
 # is DIVIDED: 192x1, 96x2, 48x4, ..., 4x48. Same cores, same problem, same
 # binary — the only thing that changes is where the boundary between process
@@ -750,7 +751,7 @@ if [ "${HYBRID_SPLIT:-1}" != "0" ] && [ "${AVAILABLE_CORES}" -ge 4 ]; then
 fi
 
 # ── Section 7: how the chosen split scales ───────────────────────────────────
-# Feeds figures 10 and 11 (hybrid_scaling, memory_hybrid). Section 6 asks which
+# Feeds figures 8 and 9 (hybrid_scaling, memory_hybrid). Section 6 asks which
 # split is best at a fixed machine; this asks how the split you picked behaves
 # as the machine grows. They are different questions and neither answers the
 # other: a decomposition can win at 192 cores and still stop scaling at 48, and

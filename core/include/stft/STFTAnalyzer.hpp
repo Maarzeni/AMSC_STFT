@@ -33,9 +33,9 @@
  *
  * ─── Building the FFT engine ────────────────────────────────────────────────
  * The engine is obtained from an FFTFactory (std::function<FFT()>), which
- * defaults to default-construction — so the three-argument constructor behaves
- * exactly as before.  A factory, or an already-constructed instance to copy
- * from, can be injected instead; this is the only way to configure an engine
+ * defaults to default-construction — so the three-argument constructor needs
+ * no factory of its own.  A factory, or an already-constructed instance to
+ * copy from, can be injected instead; this is the only way to configure an engine
  * that takes constructor arguments, such as ParallelFFT's thread count.
  *
  * Under Frames the factory is invoked once per thread, inside the OpenMP
@@ -318,7 +318,9 @@ private:
      *
      * Writes numBins = frameSize/2+1 normalized magnitudes into outRow.
      * Normalization: divide by (frameSize * coherentGain) to recover physical
-     * amplitude units (independent of window choice and frame size).
+     * amplitude units (independent of window choice and frame size).  A real
+     * sinusoid of amplitude A peaks at A/2 — the one-sided spectrum keeps one
+     * of the two mirrored halves and does not double the bins it keeps.
      */
     void computeFrame(const std::vector<double>& signal,
                       std::size_t frameIdx,
@@ -345,7 +347,11 @@ private:
         // In-place forward FFT.
         fft.forward(spec);
 
-        // One-sided magnitude, normalized so that a full-scale sinusoid gives 1.0.
+        // One-sided magnitude, divided by sum(w) = frameSize * coherentGain so the
+        // scale is independent of frame size and window choice.  A real sinusoid of
+        // amplitude A peaks at A/2: its energy is split with the mirrored bin in the
+        // discarded upper half, which is not folded back in.  See the normalisation
+        // note in test_STFTAnalyzer.cpp.
         // The division stays in double; the narrowing to Magnitude happens once,
         // here, on the way into the output matrix — see SpectrogramData.hpp for
         // why the matrix is float and the arithmetic above it is not.

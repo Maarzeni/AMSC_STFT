@@ -16,12 +16,15 @@ Both read from and write to their default locations under results/; pass
   3  stft_mpi        STFT on MPI alone (1 thread per rank), speedup
   4  stft_hybrid     STFT with 2 threads per rank, speedup against rank count
   5  memory          broadcast vs scatter, mean per-rank footprint vs ranks
-     (6 retired — weak scaling is no longer measured)
-  7  granularity     shared-memory: threads across frames vs inside the FFT
-  8  granularity_mpi the same comparison, per MPI rank
-  9  hybrid_split    best rank/thread split at a fixed number of cores
- 10  split_scaling   does that split keep scaling as nodes are added
- 11  memory_hybrid   broadcast vs scatter, at the split figure 10 uses
+  6  granularity     shared-memory: threads across frames vs inside the FFT
+  7  hybrid_split    best rank/thread split at a fixed number of cores
+  8  split_scaling   does that split keep scaling as nodes are added
+  9  memory_hybrid   broadcast vs scatter, at the split figure 8 uses
+
+Figure 10 (crossover: one node vs several, against audio length) is drawn by
+analysis/plot_crossover.py instead — it is fed by scripts/run_hybrid.sh, not
+by run_suite.sh, so it is regenerated on its own.
+                     one above (see its own header for why)
 
 Each figure carries a parameter box to its right listing everything held fixed,
 so a figure lifted into a slide still says what it measured.
@@ -707,7 +710,7 @@ def fig_split_scaling(rows, mem, machine, stat, out, strategies=("scatter",)):
 
 HYBRID_SPLIT_SOURCE = "hybrid_split"
 
-# Cores per socket and per node of the machine figure 9 describes, used only to
+# Cores per socket and per node of the machine figure 7 describes, used only to
 # annotate where a rank stops fitting in one NUMA domain. Galileo100's Xeon 8260
 # is 2 x 24. A machine with a different layout needs these changed; a split that
 # matches neither is simply not annotated, so a wrong value cannot invent a
@@ -853,7 +856,7 @@ def fig_hybrid_split(rows, machine, stat, out):
     finish(fig, out)
 
 
-def fig_granularity(rows, machine, stat, out, distributed=False):
+def fig_granularity(rows, machine, stat, out):
     """The same thread budget spent across frames vs inside each transform.
 
     This is the figure that justifies the engine choice: the STFT could put its
@@ -866,16 +869,11 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
     The reference is horizontal, not diagonal: the worker count is fixed here
     and the workload is what varies, so "ideal" means the whole budget turned
     into speedup at every problem size.
-
-    `distributed` switches the same comparison to its MPI form, where every
-    rank splits its own share of the frames the same two ways. One function
-    serves both because only the row source and the wording change — the
-    experiment, the baseline and the reading are identical.
     """
-    section = "mpi_granularity" if distributed else "stft_granularity"
-    source  = "benchmark_mpi"   if distributed else "benchmark_openmp"
-    base_section = "mpi" if distributed else "stft"
-    serial_mark  = "serial (1 rank" if distributed else "1 thread"
+    section = "stft_granularity"
+    source  = "benchmark_openmp"
+    base_section = "stft"
+    serial_mark  = "1 thread"
     # One line each, not two: this legend sits inside the axes, and a box twice
     # as tall hides twice as much of the curves. What the two arms are made of
     # goes in the parameter box instead, where it costs no plot area.
@@ -942,14 +940,13 @@ def fig_granularity(rows, machine, stat, out, distributed=False):
     # "best" rather than a fixed corner: which corner is free depends on the
     # data, and pinning it is how a legend ends up sitting on a curve.
     ax.legend(loc="best")
-    ax.set_title("Thread granularity: across frames or inside the FFT"
-                 + (" — per rank" if distributed else ""),
+    ax.set_title("Thread granularity: across frames or inside the FFT",
                  color=INK, loc="left", fontsize=15.5, pad=14)
 
     param_box(fig, [("machine", machine),
                     ("statistic", stat[:-3]),
                     ("workers", workers or "?"),
-                    ("MPI ranks", "several" if distributed else 1),
+                    ("MPI ranks", 1),
                     ("window", "Hann window"),
                     ("baseline", "serial STFT,"),
                     ("", "1 thread, same"),
@@ -991,7 +988,8 @@ def main() -> int:
                          "that overlap near the origin (default: speedup)")
     ap.add_argument("--only", default=None,
                     help="comma list: fft_algorithms, stft_openmp, stft_mpi, "
-                         "stft_hybrid, memory, granularity, hybrid_split, split_scaling")
+                         "stft_hybrid, memory, granularity, hybrid_split, "
+                         "split_scaling")
     args = ap.parse_args()
 
     stat = f"{args.stat}_ms"
@@ -1026,22 +1024,19 @@ def main() -> int:
         if "memory" in wanted:
             fig_memory(memory, m, args.out / f"{m}_5_memory")
         if "split_scaling" in wanted:
-            # Scatter only: broadcast belongs to figure 11, where the pair is
+            # Scatter only: broadcast belongs to figure 9, where the pair is
             # the subject rather than a second line crossing the scaling story.
             fig_split_scaling(timings, memory, m, stat,
-                              args.out / f"{m}_10_split_scaling")
-            fig_memory(memory, m, args.out / f"{m}_11_memory_hybrid",
+                              args.out / f"{m}_8_split_scaling")
+            fig_memory(memory, m, args.out / f"{m}_9_memory_hybrid",
                        source=HYBRID_SCALING_SOURCE,
                        context=[("threads / rank", 24)])
         if "hybrid_split" in wanted:
             fig_hybrid_split(timings, m, stat,
-                             args.out / f"{m}_9_hybrid_split")
+                             args.out / f"{m}_7_hybrid_split")
         if "granularity" in wanted:
             fig_granularity(timings, m, stat,
-                            args.out / f"{m}_7_granularity")
-            fig_granularity(timings, m, stat,
-                            args.out / f"{m}_8_granularity_mpi",
-                            distributed=True)
+                            args.out / f"{m}_6_granularity")
     return 0
 
 

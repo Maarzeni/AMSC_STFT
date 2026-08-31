@@ -18,10 +18,16 @@
  *
  *   3. Parallelism granularity (section "stft_granularity"): the same thread
  *      budget spent two different ways — parallel ACROSS frames (STFT
- *      OpenMP + IterativeFFT, reusing group 2's measurement) versus parallel
- *      WITHIN each frame's transform (a plain sequential frame loop calling
- *      ParallelFFT). Both are reported against the same serial baseline as
- *      group 2, so the two strategies are directly comparable.
+ *      OpenMP + IterativeFFT) versus parallel WITHIN each frame's transform
+ *      (a plain sequential frame loop calling ParallelFFT). Both are reported
+ *      against the same serial baseline as group 2, so the two strategies are
+ *      directly comparable.
+ *
+ *      The pair runs on a REDUCED thread budget (AMSC_GRANULARITY_THREADS,
+ *      8 by default), which is why its across-frames arm is measured again
+ *      rather than reused from group 2: that row ran on every available
+ *      thread, and comparing it with an arm limited to the smaller budget
+ *      would make the budget the difference instead of the granularity.
  *
  *      Both rows run through STFTAnalyzer itself: Parallelism::Frames for
  *      the first, Parallelism::Transform plus a ParallelFFT factory for the
@@ -185,8 +191,9 @@ int main(int argc, char** argv) {
         return env ? std::atof(env) : 30.0;
     }();
 
-    // The same analyzer, with the thread budget spent inside each transform
-    // instead of across the frames. The factory captures nThreads by value:
+    // The same analyzer template, with the thread budget spent inside each
+    // transform instead of across the frames. The factory captures granThreads
+    // — the pair's own reduced budget — by value:
     // ParallelFFT would otherwise read the ambient count when built, and the
     // setThreads(1) below would collapse it to serial along with the frame
     // loop rather than leaving it parallel independently of it.
